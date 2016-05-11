@@ -1,0 +1,3894 @@
+## Allele mapping project for Ambrosone
+## 12/9/2013
+
+########## CONTENTS
+## Initial investigation
+## Standard exome array annotation
+## Standard exome: make allele mappings
+## Custom manifest
+## Process BLAT results
+## BLAT results, round 2
+## Process BLAT results, round 2
+## BLAT results, round 3
+## Process BLAT results, round 3
+## Process UCSC Table browser results
+## BLAT results 1+2 - det. design allele strand wrt BLAT'd sequence
+## Custom exome: make allele mappings
+## Standard exome: make allele mappings, non-verbose indels
+## Custom exome: spot check allele mappings
+## Create combined allele mapping file
+## Compare to Kathy Lunetta's allele mappings
+## Revisit custom SNPs
+## Assign TOP/BOT status to Sequence.des
+## BLAT results 1+2 - det. design allele strand wrt BLAT'd sequence, redo
+## Custom exome: make allele mappings, redo, strand-ambiguous
+## Investigate 'SourceSeq' in other array annotations
+
+##########
+
+##########
+## Initial investigation
+##########
+
+## Info from Cathy:
+## I assume that the positions are build 37; I hope they are annotated as such
+
+## On 12/6/2013 11:54 AM, Sarah Nelson wrote:
+## > Hi Cathy,
+## > Sure, I'll have a look this afternoon and see what I can do. We should 
+## > be able to use BLAT and the annotated position to home in on the strand info.
+## >
+## > ~Sarah
+## >
+## > -----Original Message-----
+## > From: Cathy Laurie [mailto:cclaurie@u.washington.edu]
+## > Sent: Friday, December 06, 2013 10:37 AM
+## > To: Sarah Nelson; Caitlin McHugh
+## > Cc: 'Quenna Wong'
+## > Subject: Ambrosone allele mapping
+## >
+## > Hi Sarah,
+## > Will you please help out with deriving an allele mapping table for the 
+## > Ambrosone project?  The array is exome plus custom and I think we do 
+## > not have the plus/minus info for the custom part and CIDR has said 
+## > that Illumina does not provide that for the custom part.
+## > We might have to BLAT to figure this out, in which case, I am 
+## > wondering if we can direct the BLAT search to where it is supposed to 
+## > be according to genomic position.
+## > Will you please look into this?  Ambrosone is on zSTAX and can only be
+## > accesses via UNIX from Pearson.   "/projects/cidr/Ambrosone/"
+## > Cathy
+
+##########
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+sessionInfo()$otherPkgs$GWASTools$Version 
+
+## Read in Illumina SNP annotation - Caitlin directed me to this file, a CIDR SNP annotation
+snp.fn <- paste(dir, "ambrosone_CIDR/SNP_Information/SNPs_Table_After_TechnicalFilter.csv",sep="")
+snp <- read.csv(file=snp.fn, nrows=20)
+dim(snp); names(snp) ## 42 columns
+cols <- rep("NULL", times=42)
+cols[1:19] <- NA
+
+snp <- read.csv(file=snp.fn, colClasses=cols)
+dim(snp); head(snp,4)
+## [1] 405555     19
+##   Index Aux Intensity.Only Manually.reviewed. Comment                Name Ch
+## 1     1   1              0                             exm-IND1-200449980  1
+## 2     2   1              0                             exm-IND1-201453487  1
+## 3     3   1              0                              exm-IND1-85310248  1
+## 4     4   1              0                            exm-IND10-102817747 10
+##    Position Call.Freq Rep.Errors P.C.Errors P.P.C.Errors   X10..GC   X50..GC
+## 1 202183358 0.9849986          0          0            0 0.5887515 0.5887515
+## 2 203186865 1.0000000          0          0            0 0.9573419 0.9573419
+## 3  85537661 1.0000000          0          0            0 0.8403286 0.8403286
+## 4 102827758 0.9961464          0          0            0 0.7678030 0.7678030
+##     SNP Plus.Minus.Strand ILMN.Strand Customer.Strand Top.Genomic.Sequence
+## 1 [D/I]               BOT       MINUS            PLUS                   NA
+## 2 [D/I]               BOT       MINUS            PLUS                   NA
+## 3 [I/D]               BOT        PLUS            PLUS                   NA
+## 4 [I/D]               BOT        PLUS            PLUS                   NA
+
+with(snp, table(ILMN.Strand, Customer.Strand, exclude=NULL))
+##            Customer.Strand
+## ILMN.Strand    BOT  MINUS   PLUS    TOP   <NA>
+##       BOT   101502      0      0 102801      0
+##       MINUS      0      0     89      0      0
+##       PLUS       0      1     77      0      0
+##       TOP    99820      0      0 101265      0
+##       <NA>       0      0      0      0      0
+
+table(snp$Plus.Minus.Strand,exclude=NULL) ## all are BOT
+##    BOT   <NA> 
+## 405555      0
+
+## need a DD -  see ./SNP_Summary_README.pdf
+## Plus/Minus Strand=The strand of DNA that the SNP was assayed on  this refers to the Genome Assembly Strand (“BLAST strand”)
+## ILMN Strand=Strand used in assay (top and bottom or plus and minus) (top and bottom are reverse complements, plus and minus refer to HapMap orientation for non-SNP probes)
+## Customer Strand=Strand submitted in the assay design process (top and bottom are reverse complements, plus and minus refer to HapMap orientation for non-SNP probes)
+
+# So doesn't look like we have +/- RefStrand information for any of the SNPs
+
+sum(is.na(snp$Top.Genomic.Sequence)) ## all NA here - that poses a problem for BLAT analysis
+
+table(snp$SNP, exclude=NULL)
+ ## [A/C]  [A/G]  [A/T]  [C/G]  [D/I]  [G/C]  [I/D]  [T/A]  [T/C]  [T/G]   <NA> 
+ ## 31519 148947   6433  14186     88  12193     79   6244 154668  31198      0
+
+## see if loading in Exome array annotation from Illumina will help clarify 
+## read in Exome (non-custom) array annotation
+## ...more than one version, not sure if this is the right one
+exm.fn <- "/projects/geneva/gcc-fs2/SNP_annotation/Illumina/HumanExome-12v1_A/HumanExome-12v1_A.csv"
+exm <- read.csv(file=exm.fn, skip=7)
+dim(exm); names(exm)
+## [1] 247894     21
+##  [1] "IlmnID"           "Name"             "IlmnStrand"       "SNP"             
+##  [5] "AddressA_ID"      "AlleleA_ProbeSeq" "AddressB_ID"      "AlleleB_ProbeSeq"
+##  [9] "GenomeBuild"      "Chr"              "MapInfo"          "Ploidy"          
+## [13] "Species"          "Source"           "SourceVersion"    "SourceStrand"    
+## [17] "SourceSeq"        "TopGenomicSeq"    "BeadSetID"        "Exp_Clusters"    
+## [21] "RefStrand"
+
+table(is.element(snp$Name, exm$Name))
+##  FALSE   TRUE 
+## 159036 246519 ## so Ambrosone has 159,036 custom SNPs (matches CIDR SNP table, "M:\Ambrosone\ambrosone_CIDR\SNP_Information\SNP_Summary_README.pdf")
+
+## home in on one overlapping example SNP 
+overlap.snp <- snp[is.element(snp$Name, exm$Name) & !is.element(snp$SNP,c("[I/D]","[D/I]")),"Name"]
+length(overlap.snp) # 246380
+
+# 1st was strand ambiguous, choose unambiguous
+overlap.snp[2] # [1] "exm-rs1000026"
+
+# look at in Ambrosone SNP info
+snp[snp$Name==overlap.snp[2],]
+##     Index Aux Intensity.Only Manually.reviewed. Comment          Name Ch
+## 138   138   1              0                            exm-rs1000026 21
+##     Position Call.Freq Rep.Errors P.C.Errors P.P.C.Errors   X10..GC   X50..GC
+## 138 38934599 0.9995871          0          0            0 0.9387502 0.9387502
+##       SNP Plus.Minus.Strand ILMN.Strand Customer.Strand Top.Genomic.Sequence
+## 138 [A/G]               BOT         TOP             TOP                   NA
+
+# look at in Exome annotation
+exm[exm$Name==overlap.snp[2],]
+##                               IlmnID          Name IlmnStrand   SNP AddressA_ID
+## 139 exm-rs1000026-131_T_F_1990486741 exm-rs1000026        TOP [A/G]    33664878
+##                                       AlleleA_ProbeSeq AddressB_ID
+## 139 TAAGTCAAAGGAAAACAAGTCAATAAATCCACTATCTATGGCTCCAAGGA          NA
+##     AlleleB_ProbeSeq GenomeBuild Chr  MapInfo  Ploidy      Species Source
+## 139                         37.1  21 38934599 diploid Homo sapiens  dbSNP
+##     SourceVersion SourceStrand
+## 139           131          TOP
+##                                                                                                                         SourceSeq
+## 139 GAAAGAGCCATAAGTCAAAGGAAAACAAGTCAATAAATCCACTATCTATGGCTCCAAGGA[A/G]TAGAGGAAGCACCCAAAGTGATATTATTGTGAAACATTATTATTAATATGGGAAAGCCGC
+##                                                                                                                     TopGenomicSeq
+## 139 GAAAGAGCCATAAGTCAAAGGAAAACAAGTCAATAAATCCACTATCTATGGCTCCAAGGA[A/G]TAGAGGAAGCACCCAAAGTGATATTATTGTGAAACATTATTATTAATATGGGAAAGCCGC
+##     BeadSetID Exp_Clusters RefStrand
+## 139       608            3         -
+
+
+## just noticed in CIDR SNP read me this DD entry for "Top Genomic Sequence:"
+## "This field is empty. The full sequence can be obtained from the Illumina files on the ftp site referred to in the above section" (except I don't see an ftp site noted in the document)
+
+## for all the non-custom SNPs - are the design alleles the same?
+comb <- merge(snp,exm, by=c("Name","SNP"),all.x=FALSE, all.y=TRUE, sort=FALSE)
+dim(comb)
+
+## Jane Romm sending a design manifest used to create the custom array
+
+
+##########
+## Standard exome array annotation
+##########
+## 2/3/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+sessionInfo()$otherPkgs$GWASTools$Version
+
+# reading in custom manifest from Jane - piecing together the info we have vs. info we need to create allele mappings file
+# keep goal in mind: to get a mapping between the A/B design alleles to (1) dbSNP FORWARD alleles, (2) TOP alleles, and (3) plus strand (wrt human genome reference) alleles
+
+# custom file
+
+# exome+custom annotation - cols after 19 don't look useful right now
+snp.fn <- paste(dir, "ambrosone_CIDR/SNP_Information/SNPs_Table_After_TechnicalFilter.csv",sep="")
+cols <- rep("NULL", times=42)
+cols[1:19] <- NA
+SNP <- read.csv(file=snp.fn, colClasses=cols)
+dim(snp); head(snp,4)
+## [1] 405555     19
+##   Index Aux Intensity.Only Manually.reviewed. Comment                Name Ch
+## 1     1   1              0                             exm-IND1-200449980  1
+## 2     2   1              0                             exm-IND1-201453487  1
+## 3     3   1              0                              exm-IND1-85310248  1
+## 4     4   1              0                            exm-IND10-102817747 10
+##    Position Call.Freq Rep.Errors P.C.Errors P.P.C.Errors   X10..GC   X50..GC
+## 1 202183358 0.9849986          0          0            0 0.5887515 0.5887515
+## 2 203186865 1.0000000          0          0            0 0.9573419 0.9573419
+## 3  85537661 1.0000000          0          0            0 0.8403286 0.8403286
+## 4 102827758 0.9961464          0          0            0 0.7678030 0.7678030
+##     SNP Plus.Minus.Strand ILMN.Strand Customer.Strand Top.Genomic.Sequence
+## 1 [D/I]               BOT       MINUS            PLUS                   NA
+## 2 [D/I]               BOT       MINUS            PLUS                   NA
+## 3 [I/D]               BOT        PLUS            PLUS                   NA
+## 4 [I/D]               BOT        PLUS            PLUS                   NA
+
+# exome array annotation
+## ...more than one version, not sure if this is the right one
+exm.fn <- "/projects/geneva/gcc-fs2/SNP_annotation/Illumina/HumanExome-12v1_A/HumanExome-12v1_A.csv"
+# specify row count to avoid getting those list lines of control probes
+cmnd <- paste("head -10",exm.fn, "| grep Count")
+system(cmnd) # Loci Count ,247870,,,,,,,,,,,,,,,,,,,
+
+exm <- read.csv(file=exm.fn, skip=7,nrow=247870, header=TRUE)
+dim(exm); names(exm)
+## [1] 247870     21
+##  [1] "IlmnID"           "Name"             "IlmnStrand"       "SNP"             
+##  [5] "AddressA_ID"      "AlleleA_ProbeSeq" "AddressB_ID"      "AlleleB_ProbeSeq"
+##  [9] "GenomeBuild"      "Chr"              "MapInfo"          "Ploidy"          
+## [13] "Species"          "Source"           "SourceVersion"    "SourceStrand"    
+## [17] "SourceSeq"        "TopGenomicSeq"    "BeadSetID"        "Exp_Clusters"    
+## [21] "RefStrand"
+
+# get a unique set of the fields we'd use for making allele mapping
+## IlmnID # needed to parse out "R" or "F" to indicate that design alleles are dbSNP FORWARD or REVERSE
+## Name
+## IlmnStrand # needed to determine if design alleles are Illumina TOP or BOT
+## SNP
+## SourceSeq
+## RefStrand
+
+# i think having TOP and plus alleles are more important than FWD, if the latter ends up being too hard to get for the custom SNPs
+# we only need SourceSeq if we're going to get verbose alleles for indels - could probably also do away with that as well
+
+# include mapping info (chr, pos)
+flds <- c("IlmnID","Name","IlmnStrand","SNP","SourceSeq","SourceStrand","RefStrand", "Chr","MapInfo")
+idx <- match(flds,names(exm))
+names(exm)[idx]
+## [1] "IlmnID"       "Name"         "IlmnStrand"   "SNP"          "SourceSeq"   
+## [6] "SourceStrand" "RefStrand"    "Chr"          "MapInfo"
+
+exm.mini <- unique(exm[,idx])
+nrow(exm.mini) # [1] 247870
+
+nrow(snp) # 405555
+nrow(exm) # 247870
+length(unique(snp$Name)) # 405555 - no duplicates by name (could be by pos)
+length(unique(exm$Name)) # 247870
+sum(duplicated(exm$Name)) # 0 duplicates
+
+# map these to probes on the exome+custom array
+table(is.element(snp$Name,exm.mini$Name))
+##  FALSE   TRUE 
+## 159036 246519  # counts match CIDR SNP summary doc: 159,036 custom SNPs, 246,519 exome SNPs
+
+# reduce Ambrosone SNP annotation to relevant columns
+names(snp)
+##  [1] "Index"                "Aux"                  "Intensity.Only"      
+##  [4] "Manually.reviewed."   "Comment"              "Name"                
+##  [7] "Ch"                   "Position"             "Call.Freq"           
+## [10] "Rep.Errors"           "P.C.Errors"           "P.P.C.Errors"        
+## [13] "X10..GC"              "X50..GC"              "SNP"                 
+## [16] "Plus.Minus.Strand"    "ILMN.Strand"          "Customer.Strand"     
+## [19] "Top.Genomic.Sequence"
+
+table(is.na(snp$Top.Genomic.Sequence)) ## all T, don't need to keep this col
+
+names(snp)[c(6:8,15:18)]
+## [1] "Name"              "Ch"                "Position"         
+## [4] "SNP"               "Plus.Minus.Strand" "ILMN.Strand"      
+## [7] "Customer.Strand"
+
+snp.mini <- snp[,c(6:8,15:18)]
+head(snp.mini)
+##                 Name Ch  Position   SNP Plus.Minus.Strand ILMN.Strand
+## 1  exm-IND1-200449980  1 202183358 [D/I]               BOT       MINUS
+## 2  exm-IND1-201453487  1 203186865 [D/I]               BOT       MINUS
+## 3   exm-IND1-85310248  1  85537661 [I/D]               BOT        PLUS
+## 4 exm-IND10-102817747 10 102827758 [I/D]               BOT        PLUS
+## 5  exm-IND10-18329639 10  18289634 [D/I]               BOT       MINUS
+## 6  exm-IND10-27476467 10  27436462 [D/I]               BOT       MINUS
+##   Customer.Strand
+## 1            PLUS
+## 2            PLUS
+## 3            PLUS
+## 4            PLUS
+## 5            PLUS
+## 6            PLUS
+
+# add a flag to indicate presence on (standard, non custom) exome array
+snp.mini$exome.std <- is.element(snp.mini$Name, exm.mini$Name)
+table(snp.mini$exome.std, exclude=NULL)
+##  FALSE   TRUE   <NA> 
+## 159036 246519      0 
+
+# merge dfs together
+# first rename all exome array columns with suffix ".std" (for standard array)
+
+new.names <-  paste(names(exm.mini), "std",sep=".")
+names(exm.mini) <- new.names
+
+# keep custom SNP rows in  - will have NA values for exome array columns
+comb <- merge(snp.mini, exm.mini, by.x="Name",by.y="Name.std",
+              all.x=TRUE, all.y=FALSE, sort=FALSE)
+
+dim(comb); head(comb[comb$exome.std,],3)
+##  [1] 405555     1
+##                 Name Ch  Position   SNP Plus.Minus.Strand ILMN.Strand
+## 1 exm-IND1-200449980  1 202183358 [D/I]               BOT       MINUS
+## 2 exm-IND1-201453487  1 203186865 [D/I]               BOT       MINUS
+## 3  exm-IND1-85310248  1  85537661 [I/D]               BOT        PLUS
+##   Customer.Strand exome.std                          IlmnID.std IlmnStrand.std
+## 1            PLUS      TRUE exm-IND1-200449980-0_M_R_1990486447          MINUS
+## 2            PLUS      TRUE exm-IND1-201453487-0_M_R_1990486448          MINUS
+## 3            PLUS      TRUE  exm-IND1-85310248-0_P_F_1990486624           PLUS
+##   SNP.std
+## 1   [D/I]
+## 2   [D/I]
+## 3   [I/D]
+##                                                                                                                      SourceSeq.std
+## 1    GAGGGCCGCTCAGCGAGGGCGGGACAGAACCTCTCCCGGGCTGGGAGTGCACGGCGCGGT[-/G]CGCCCAGGTAGGCTTGGGGGAAGGGTGCCGAGCTCCGGAAAGTTCCACAGGTCCTCCGCA
+## 2 CATGGAGCTGTGTTTGTACCCCACCTCCAAATTCCACCACTGGCCCTGGGCCCCTTACTT[-/ACTC]AGTTCCTGCCGTAGCGTCTGGATGAGGGGGTATCGGCCCTGGTTGCAGGAGAAGCCGGCA
+## 3    CTTTATGCAGCCCAAGTCAGAACCATGGCTCCAAAACAAAAGAAAAAGACATCACGTGGC[-/A]AAAAAAGACTAAAACCAGTATTAGCTGGTAGGAATATTTCTTCATTGAATGGGATTTTTT
+##   SourceStrand.std RefStrand.std Chr.std MapInfo.std
+## 1             PLUS             -       1   202183358
+## 2             PLUS             -       1   203186865
+## 3             PLUS             +       1    85537661
+
+# make a version that is just the overlapping SNP set
+comb.std <- comb[comb$exome.std,]; dim(comb.std) # [1] 246519     16
+
+# make sure the overlapping SNPs match on position and alleles ("SNP" col)
+attach(comb.std)
+table(Ch==Chr.std)
+ ## FALSE   TRUE 
+ ##   124 246395
+table(Position==MapInfo.std) ## all T
+table(SNP==SNP.std) ## all T
+
+# SNP and pos match up - chrom is probably X vs. XY stuff
+chr.mmatch <- Ch!=Chr.std
+with(comb.std[chr.mmatch,], table(Ch, Chr.std))
+##     Chr.std
+## Ch     X   Y
+##   XY 113  11 ## this type of mismatch is ok for purposes of allele mapping
+
+# i would also expect these fields to match
+table(ILMN.Strand==IlmnStrand.std) ## all TRUE
+
+detach(comb.std)
+
+##########
+## Standard exome: make allele mappings
+##########
+## 2/4/2014
+
+## now that we've confirmed we can use the Illumina manifest for the 246519 standard exome SNPs, run the "make.alelle.mappings" function for them
+
+dim(comb.std); names(comb.std)
+## [1] 246519     16
+##  [1] "Name"              "Ch"                "Position"         
+##  [4] "SNP"               "Plus.Minus.Strand" "ILMN.Strand"      
+##  [7] "Customer.Strand"   "exome.std"         "IlmnID.std"       
+## [10] "IlmnStrand.std"    "SNP.std"           "SourceSeq.std"    
+## [13] "SourceStrand.std"  "RefStrand.std"     "Chr.std"          
+## [16] "MapInfo.std" 
+
+# remove unnecessary columns
+comb.std.mini <- comb.std[,c(1,9:16)]
+names(comb.std.mini)
+## [1] "Name"             "IlmnID.std"       "IlmnStrand.std"   "SNP.std"         
+## [5] "SourceSeq.std"    "SourceStrand.std" "RefStrand.std"    "Chr.std"         
+## [9] "MapInfo.std" 
+
+# strip off 'std' from Illumina array manifest fields so that the function will recognize them
+new.names <- sub(".std","", names(comb.std.mini))
+names(comb.std.mini) <- new.names
+
+## now that we've confirmed we can use the Illumina manifest for the 246519 standard exome SNPs, run the "make.alelle.mappings" function for them
+library(QCpipeline)
+
+map.std <- make.allele.mappings(comb.std.mini)
+	## Total number of probes: 246519 
+	## Total number of indels: 139 
+	## Creating mappings for insertion/deletion probes
+	## Defining TOP alleles
+	## Defining FORWARD alleles
+	## Defining PLUS(+) alleles
+	## Total number for probes with NA alleles (probably CNVs):  0 
+	## Mapping file created; do some spot checking against original annotation to confirm mappings!
+
+# spot check an indel
+head(map.std,2)
+##                       snp alle.AB alle.design alle.top alle.fwd alle.plus
+## 1      exm-IND1-200449980       A           -        -        -         -
+## 246520 exm-IND1-200449980       B           C        G        G         G
+
+comb.std.mini[comb.std.mini$Name=="exm-IND1-200449980",]
+##                 Name                              IlmnID IlmnStrand   SNP
+## 1 exm-IND1-200449980 exm-IND1-200449980-0_M_R_1990486447      MINUS [D/I]
+##                                                                                                                       SourceSeq
+## 1 GAGGGCCGCTCAGCGAGGGCGGGACAGAACCTCTCCCGGGCTGGGAGTGCACGGCGCGGT[-/G]CGCCCAGGTAGGCTTGGGGGAAGGGTGCCGAGCTCCGGAAAGTTCCACAGGTCCTCCGCA
+##   SourceStrand RefStrand Chr   MapInfo
+## 1         PLUS         -   1 202183358
+
+# -/G are on Illumina PLUS (TOP for indels), the design alleles are Ilumina MINUS (BOT for indels)
+# so design insertion allele is C, TOP insertion allele is G
+# design alleles are dbSNP Reverse (per IlmnID), so FWD alleles would be rev complement of design alleles - which they are. design alleles are on - strand (according to RefStrand), to plus alleles would also be rev complement of design alleles - which they are
+
+## look at Ambrosone annotation for this indel
+snp.mini[snp.mini$Name=="exm-IND1-200449980",]
+##                 Name Ch  Position   SNP Plus.Minus.Strand ILMN.Strand
+## 1 exm-IND1-200449980  1 202183358 [D/I]               BOT       MINUS
+##   Customer.Strand exome.std
+## 1            PLUS      TRUE
+
+# spot check a non-indel (indels are first 139*2 rows)
+map.std[(2*139+1):(2*139+2),]
+##                 snp alle.AB alle.design alle.top alle.fwd alle.plus
+## 140    exm-rs1000110       A           A        A        A         T
+## 246659 exm-rs1000110       B           G        G        G         C
+
+comb.std.mini[comb.std.mini$Name=="exm-rs1000110",]
+##              Name                           IlmnID IlmnStrand   SNP
+## 140 exm-rs1000110 exm-rs1000110-131_T_F_1990486745        TOP [A/G]
+##                                                                                                                         SourceSeq
+## 140 AATGTATAGAGTGCAAAGATGCTTGCCTTCTTATAAACATTCTTATTCGTCAATGGCCCC[A/G]CGATGCAGGAATGTTGTTTCTTTTTTCTATGCTTCCAAAGTGCTGGAGGCCCTTAAAGGA
+##     SourceStrand RefStrand Chr   MapInfo
+## 140          TOP         -   9 117908721
+
+# looks correct - design alleles are on - strand, so plus alleles (T/C) are rev comp of design (A/G)
+# also BLAT'd that SourceSeq and it is on - strand
+
+snp.mini[snp.mini$Name=="exm-rs1000110",]
+##              Name Ch  Position   SNP Plus.Minus.Strand ILMN.Strand
+## 140 exm-rs1000110  9 117908721 [A/G]               BOT         TOP
+##     Customer.Strand exome.std
+## 140             TOP      TRUE
+
+## write out this allele mappings file
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_stdExomeVariants_alleleMappings.csv", sep="")
+write.csv(map.std, file=fn.out, quote=FALSE, row.names=FALSE)
+
+##########
+## Custom manifest              
+##########
+## 2/4/2014
+
+# now that we've got strand annotation for Ambrosone SNPs on the standard exome array, turn to the custom SNP manifest info provided by Jane Romm at CIDR (sent 1/31/14)             
+
+fn.in <- paste(dir,"ambrosone_CIDR/SNP_Information/Final_012513_rga/Final_012513_rga.csv",sep="")
+cstm <- read.csv(fn.in, nrow=20)
+
+names(cstm)
+##  [1] "Locus_Name"                  "Sequence"                   
+##  [3] "Genome_Build_Version"        "Chromosome"                 
+##  [5] "Coordinate"                  "Source"                     
+##  [7] "Source_Version"              "Sequence_Orientation"       
+##  [9] "Region_Description"          "Final_Score"                
+## [11] "Failure_Codes"               "Validation_Bin"             
+## [13] "Validation_Class"            "Assay_Design_Id"            
+## [15] "Ilmn_Id"                     "Normalization_Bin"          
+## [17] "Bead_Types.Assay"            "Design_Date"                
+## [19] "Assay_Type"                  "Intensity_Only"             
+## [21] "MAF_Caucasian"               "Chr_Count_Caucasian"        
+## [23] "Study_Name_Caucasian"        "MAF_African"                
+## [25] "Chr_Count_African"           "Study_Name_African"         
+## [27] "MAF_African_American"        "Chr_Count_African_American" 
+## [29] "Study_Name_African_American" "MAF_Japanese"               
+## [31] "Chr_Count_Japanese"          "Study_Name_Japanese"        
+## [33] "MAF_Chinese"                 "Chr_Count_Chinese"          
+## [35] "Study_Name_Chinese"          "MAF_Other"                  
+## [37] "Chr_Count_Other"             "Study_Name_Other"           
+## [39] "NCBI_Gene_Id"                "Gene_Symbol"                
+## [41] "Accession"                   "Location"                   
+## [43] "Exon_Location"               "Coding_Status"              
+## [45] "Amino_Acid_Change"    
+
+# pick out columns that look useful
+head(cstm,4)
+
+colsUse <- c(1:6,8,15,17,19)
+names(cstm)[colsUse]
+
+# read in all rows with selected columns
+cols <- rep('NULL', 45)
+cols[colsUse] <- NA
+
+cstm <- read.csv(fn.in, colClasses=cols)
+dim(cstm); head(cstm,3)
+## [1] 187365     10
+##   Locus_Name
+## 1 rs11615143
+## 2 rs10771310
+## 3 rs11615434
+##                                                                                                                        Sequence
+## 1 AACTAGTAGCTAGAAATCTTTTGTTCCACAATGAAAAGTGGGAGAAGGACCCCTGATTTT[C/G]TTTCTCTGCTTCAAATGTAGGCATGCTTTGTGACTTTACACTGCAGAGCCTCCTGGGATT
+## 2 GAAGAAATTGAAAAGCAGGAACCTGCTGACAATCTTTTTCTTGTAGTCATGGGTCCTAGC[A/G]CAGTGCTCTGCACATGGTCAGCATTCATACAAACACATGTGATTATATTTCTGAGCTGGA
+## 3 agacaaaacagtgatcttgccagagagcaaggcccaaccagtggccctaccaaacataag[A/G]gcaaaggcagtggcccagccaactagggaacccatgaaaactctgcctgctcaaggttgt
+##   Genome_Build_Version Chromosome Coordinate Source Sequence_Orientation
+## 1                 37.1         12  9,254,422  dbsnp              FORWARD
+## 2                 37.1         12    9222902  dbsnp              FORWARD
+## 3                 37.1         12    9235045  dbsnp              FORWARD
+##                         Ilmn_Id Bead_Types.Assay Assay_Type
+## 1 rs11615143-131_B_R_2105229238                2  InfiniumI
+## 2 rs10771310-131_T_F_2088830620                1 InfiniumII
+## 3 rs11615434-131_T_F_2105215723                1 InfiniumII
+
+# we don't have a DD for this file. what are the options for Sequence_Orientation?
+table(cstm$Sequence_Orientation, exclude=NULL)
+## FORWARD REVERSE    <NA> 
+##  173209   14156       0 # this may be dbSNP FORWARD/REVERSE - as the "Source" column is dbsnp
+
+table(cstm$Source, exclude=NULL)
+##  dbsnp  dbSNP   <NA> 
+## 151945  35420      0  # capitalization aside, they're all the same source (dbSNP)
+
+## create a version of the Ambrosone annotation with just the custom snps
+snp.cstm <- snp.mini[!snp.mini$exome.std,]
+dim(snp.cstm) # 159036 8
+
+# try to match up by name
+table(is.element(snp.cstm$Name, cstm$Locus_Name))
+##  FALSE 
+## 159036 # hmm, perfect.
+
+########################## MATCHING BY POSITION
+# match up on position and see what's going on
+
+newbp0 <- sub(",","",cstm$Coordinate, fixed=TRUE) # only replacing first instance?
+newbp1 <- sub(",","",newbp0, fixed=TRUE)
+newbp2 <- sub(",","",newbp1, fixed=TRUE)
+sum(is.na(as.numeric(newbp2))) # 1269
+
+cstm$Coordinate.int <- as.numeric(newbp2)
+
+table(cstm$Chromosome) # character chroms
+##     1    10    11    12    13    14    15    16    17    18    19     2    20 
+## 11869 15341 10439 10557  4083  8231  3431  9719  5137  4614  7579 16855  3414 
+##    21    22     3     4     5     6     7     8     9     X    XY     Y 
+##  2141  3746 11145  6704 11637 12165  7822  9454  9355  1920     2     5
+
+table(snp.cstm$Ch) # also chars
+##     1    10    11    12    13    14    15    16    17    18    19     2    20 
+## 10032 13041  8681  9022  3455  6990  2911  8280  4353  3981  6262 14378  2902 
+##    21    22     3     4     5     6     7     8     9     X    XY     Y 
+##  1836  3136  9548  5721  9864 10338  6623  8035  8019  1533    90     5
+
+cstm$map <- paste(cstm$Chromosome, cstm$Coordinate.int, sep=".")
+head(cstm$map)
+## [1] "12.9254422"  "12.9222902"  "12.9235045"  "17.74459243" "17.79099414"
+## [6] "9.107632644"
+
+sum(duplicated(cstm$map)) # 53 duplicates, just looking at chr and position
+
+dups <- cstm$map[duplicated(cstm$map)]
+cstm[is.element(cstm$map,dups[1]),]
+##      Locus_Name
+## 6338 rs11583410
+## 6339 rs11583410
+##                                                                                                                           Sequence
+## 6338 GCCACGAGCTGCTGACAGAGAGCACGGTGCATGAGAACGGCATAGTGCAGGGGCTTGCAG[A/C]TGGCCACGTAGCGGTCCAGGGCCATGGCGGCCAGGACGATGCACTCCGTGCATCCCAGCC
+## 6339 GCCACGAGCTGCTGACAGAGAGCACGGTGCATGAGAACGGCATAGTGCAGGGGCTTGCAG[A/C]TGGCCACGTAGCGGTCCAGGGCCATGGCGGCCAGGACGATGCACTCCGTGCATCCCAGCC
+##      Genome_Build_Version Chromosome Coordinate Source Sequence_Orientation
+## 6338                 37.1          1  247614896  dbsnp              FORWARD
+## 6339                 37.1          1  247614896  dbsnp              FORWARD
+##                            Ilmn_Id Bead_Types.Assay Assay_Type Coordinate.int
+## 6338 rs11583410-131_T_F_1990449442                1 InfiniumII      247614896
+## 6339 rs11583410-131_T_F_1990449442                1 InfiniumII      247614896
+##              map
+## 6338 1.247614896
+## 6339 1.247614896
+
+# hm, no difference in the fields we've picked out. reduce to unique rows
+cstm.uniq <- unique(cstm)
+dim(cstm); dim(cstm.uniq) # 187365 vs 187349 rows
+
+sum(duplicated(cstm.uniq$map)) # still 37 duplicates
+
+# repeat the process
+dups <- cstm.uniq$map[duplicated(cstm.uniq$map)]
+cstm.uniq[is.element(cstm.uniq$map,dups[1]),]
+##       Locus_Name
+## 58918 rs11290822
+## 58958 rs73807131
+##                                                                                                                            Sequence
+## 58918 GGGCCAAGATCATGCCACAGCACTCCATCCTGGGTGACAGCGTGAGACTCTATCTCAAAA[-/C]AAAAAAAGGATTGGAGACGGTCAGGTCCACAGGACCTCAGTAACATTTGACTATTTGGAT
+## 58958 GGGCCAAGATCATGCCACAGCACTCCATCCTGGGTGACAGCGTGAGACTCTATCTCAAAA[A/C]AAAAAAAGGATTGGAGACGGTCAGGTCCACAGGACCTCAGTAACATTTGACTATTTGGAT
+##       Genome_Build_Version Chromosome Coordinate Source Sequence_Orientation
+## 58918                 37.1          3    4741045  dbsnp              FORWARD
+## 58958                 37.1          3    4741045  dbsnp              FORWARD
+##                             Ilmn_Id Bead_Types.Assay Assay_Type Coordinate.int
+## 58918 rs11290822-131_M_R_2091289439                1 InfiniumII        4741045
+## 58958 rs73807131-131_B_R_2091169375                1 InfiniumII        4741045
+##             map
+## 58918 3.4741045
+## 58958 3.4741045
+
+# ah, an indel and a SNP. ok, leave these duplicated positions in
+
+## look in Ambrosone custom annotation
+snp.cstm$map <- paste(snp.cstm$Ch, snp.cstm$Position, sep=".")
+sum(duplicated(snp.cstm$map)) # 29 some duplicates, just looking at chr and position
+
+dups <- snp.cstm$map[duplicated(snp.cstm$map)]
+snp.cstm[is.element(snp.cstm$map, dups[1]),]
+##                                  Name Ch  Position   SNP Plus.Minus.Strand
+## 247438 Ambrosome_Broad_seq_rs13417588  2 217894998 [A/G]               BOT
+## 273473           Ambrosome_rs13417588  2 217894998 [T/C]               BOT
+##        ILMN.Strand Customer.Strand exome.std         map
+## 247438         TOP             TOP     FALSE 2.217894998
+## 273473         BOT             TOP     FALSE 2.217894998
+
+# definately some positional duplicates -need allele mappings for all
+
+# before combining dfs, give Ambrosone custom records a unique ID
+snp.cstm$int.id <- 1:nrow(snp.cstm)
+
+# append "des" to all names from custom manifest, to indicate "design" stage info
+new.names <- paste(names(cstm.uniq),".des",sep="")
+names(cstm.uniq) <- new.names
+
+cstm.comb <- merge(snp.cstm, cstm.uniq, by.x="map",by.y="map.des",
+                   all.x=TRUE, all.y=FALSE, sort=FALSE)
+dim(cstm.comb) # [1] 159100     21
+
+sum(duplicated(cstm.comb$int.id)) # 64
+
+## separate out the unique records from the duplicated ones
+dups <- cstm.comb$int.id[duplicated(cstm.comb$int.id)]
+cstm.comb.dups <- cstm.comb[is.element(cstm.comb$int.id, dups),]
+cstm.comb.nodups <-   cstm.comb[!is.element(cstm.comb$int.id, dups),]
+
+dim(cstm.comb.dups) # 128 records
+
+dim(cstm.comb.nodups) # 158972 which align uniquely - pick back up with these after we resolve dups
+
+head(cstm.comb.dups,4)
+##            map                     Name Ch  Position   SNP Plus.Minus.Strand
+## 44 10.123397099     Ambrosome_rs78184122 10 123397099 [T/C]               BOT
+## 45 10.123397099     Ambrosome_rs78184122 10 123397099 [T/C]               BOT
+## 46 10.123397099 Ambrosome_10_123397099CG 10 123397099 [C/G]               BOT
+## 47 10.123397099 Ambrosome_10_123397099CG 10 123397099 [C/G]               BOT
+##    ILMN.Strand Customer.Strand exome.std int.id Locus_Name.des
+## 44         BOT             BOT     FALSE 112905     rs78184122
+## 45         BOT             BOT     FALSE 112905 10_123397099CG
+## 46         TOP             BOT     FALSE     44     rs78184122
+## 47         TOP             BOT     FALSE     44 10_123397099CG
+##                                                                                                                     Sequence.des
+## 44 ATTTATTTCTGATGACCTACATCTCTGAACATATTTTTCCCTATTTTTTTTGTTGGGTAC[T/C]TAATTCAGAGACATCAATTATAATTATATTGGATCATCTTTGTCCTCCATAACTAGCATC
+## 45 atttatttctgatgacctacatctctgaacatatttttccctattttttttgttgggtac[C/G]taattcagagacatcaattataattatattggatcatctttgtcctccataactagcatc
+## 46 ATTTATTTCTGATGACCTACATCTCTGAACATATTTTTCCCTATTTTTTTTGTTGGGTAC[T/C]TAATTCAGAGACATCAATTATAATTATATTGGATCATCTTTGTCCTCCATAACTAGCATC
+## 47 atttatttctgatgacctacatctctgaacatatttttccctattttttttgttgggtac[C/G]taattcagagacatcaattataattatattggatcatctttgtcctccataactagcatc
+##    Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 44                     37.1             10      123397099      dbsnp
+## 45                     37.0             10      123397099      dbSNP
+## 46                     37.1             10      123397099      dbsnp
+## 47                     37.0             10      123397099      dbSNP
+##    Sequence_Orientation.des                       Ilmn_Id.des
+## 44                  FORWARD     rs78184122-131_B_F_2091197406
+## 45                  FORWARD 10_123397099CG-128_T_R_2127976094
+## 46                  FORWARD     rs78184122-131_B_F_2091197406
+## 47                  FORWARD 10_123397099CG-128_T_R_2127976094
+##    Bead_Types.Assay.des Assay_Type.des Coordinate.int.des
+## 44                    1     InfiniumII          123397099
+## 45                    2      InfiniumI          123397099
+## 46                    1     InfiniumII          123397099
+## 47                    2      InfiniumI          123397099
+
+### ok, it looks like maybe I could merge on Name if I prepended "Ambrosone_" -- backing up
+########################## MATCHING BY NAME
+
+design.names <- paste("Ambrosome_",cstm$Locus_Name, sep="")
+table(is.element(snp.cstm$Name, design.names))
+ ## FALSE   TRUE 
+ ##     3 159033 # this is better, let's match on name and then figure out these 3 that are missing
+
+miss <- setdiff(snp.cstm$Name, design.names); miss
+## [1] "Ambrosome_rs2316860"       "Ambrosome_rs5949204"      
+## [3] "Ambrosome_seq-rs114245766"
+
+design.names[grep("rs2316860", design.names)] # "Ambrosome_seq_rs2316860" -- probably this one
+design.names[grep("rs5949204", design.names)] # "Ambrosome_seq_rs5949204"
+design.names[grep("rs114245766", design.names)] # "Ambrosome_seq_rs114245766
+
+# make a field for "names.match" that we can edit for these 3
+snp.cstm$Name.match <- snp.cstm$Name
+
+# manually update the matching name for these 3
+snp.cstm$Name.match[snp.cstm$Name=="Ambrosome_rs2316860"] <- "Ambrosome_seq_rs2316860"
+snp.cstm$Name.match[snp.cstm$Name=="Ambrosome_rs5949204"] <- "Ambrosome_seq_rs5949204"
+snp.cstm$Name.match[snp.cstm$Name=="Ambrosome_seq-rs114245766"] <- "Ambrosome_seq_rs114245766"
+
+table(is.element(snp.cstm$Name.match, design.names))
+##   TRUE 
+## 159036
+
+# match on name
+names(cstm)
+new.names <- paste(names(cstm),".des",sep="")
+names(cstm) <- new.names
+
+cstm$design.name <- design.names
+cstm.uniq <- unique(cstm)
+dim(cstm) # [1] 187365     13
+dim(cstm.uniq) # [1] 187349     13 ## use unique version
+
+cstm.comb <- merge(snp.cstm, cstm.uniq, by.x="Name.match",by.y="design.name",
+                   all.x=TRUE, all.y=FALSE, sort=FALSE)
+
+dim(cstm.comb) # [1] [1] 159036     23 - great, 1:1 match
+
+# check that design manifest info is present for all
+table(is.na(cstm.comb$Locus_Name.des)) ## all FALSE
+
+# check that map position still matches
+table(cstm.comb$map==cstm.comb$map.des)
+ ## FALSE   TRUE 
+ ##    90 158946
+
+# check these 90 - maybe chr X vs XY type of mismatches
+mmatch <- cstm.comb$map!=cstm.comb$map.des
+
+with(cstm.comb[mmatch,], table(Coordinate.int.des==Position))
+## FALSE  TRUE 
+##     2    88
+
+# look at the 2 that disagree on position
+cstm.comb[cstm.comb$map!=cstm.comb$map.des &
+          cstm.comb$Coordinate.int.des!=cstm.comb$Position,]
+##                       Name.match                      Name Ch  Position   SNP
+## 136597 Ambrosome_seq_rs115189184 Ambrosome_seq_rs115189184  2 121479813 [T/C]
+## 139936 Ambrosome_seq_rs116409953 Ambrosome_seq_rs116409953  3  30559861 [T/C]
+##        Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 136597               BOT         BOT             BOT     FALSE 2.121479813
+## 139936               BOT         BOT             TOP     FALSE  3.30559861
+##        int.id  Locus_Name.des
+## 136597 136597 seq_rs115189184
+## 139936 139936 seq_rs116409953
+##                                                                                                                         Sequence.des
+## 136597 TGATTCTACATCCCAAGAATTAAATTCCAGCTTTGTGTCATCCCCATGTATGATCAGCAG[T/C]CTTGCTCTGTCTTCATGTAAGTCACTAGCAAAACTGCAGAACAGGGCAGGGCTGAGCAGT
+## 139936 GGGAGATTAACACTGCAGTTTTCTTGCACAAGGCTCAGACTACACAATACTAAAAAATAA[A/G]AAGATAAACATGATTCTAGGCACATTCCGTGCCTCATCTCCATGGCCCAGTTCCTGTTAT
+##        Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 136597                       37              2      121479814      dbSNP
+## 139936                       37              3       30559862      dbSNP
+##        Sequence_Orientation.des                        Ilmn_Id.des
+## 136597                  FORWARD seq_rs115189184-128_B_F_2127960885
+## 139936                  FORWARD seq_rs116409953-128_B_R_2127939942
+##        Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 136597                    1     InfiniumII          121479814 2.121479814
+## 139936                    1     InfiniumII           30559862  3.30559862
+
+## ah, ok - they differ by 1 bp. wont' interfere with allele mapping
+
+# check the remainder of map mismatches, which are presumably due to chr
+with(cstm.comb[mmatch,], table(Ch, Chromosome.des))
+##     Chromosome.des
+## Ch    2  3  X
+##   2   1  0  0
+##   3   0  1  0 # the chr 2, 3 records are the ones above off by 1 bp; the rest are XY vs X
+##   XY  0  0 88
+
+# save cstm.cmb in case we need to pick back up here - save as text delimited as there are some commas within fields
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt", sep="")
+write.table(cstm.comb, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE)
+
+# take one SNP and work through how we can use design manifest to get allele mappings
+tst <- cstm.comb[1,]
+##               Name.match                   Name Ch  Position   SNP
+## 1 Ambrosome_10_123219423 Ambrosome_10_123219423 10 123219423 [T/G]
+##   Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std          map int.id
+## 1               BOT         BOT             BOT     FALSE 10.123219423      1
+##   Locus_Name.des
+## 1   10_123219423
+##                                                                                                                    Sequence.des
+## 1 CAAGAAGGAGTCATTTGCCAAAGTGAAATAGCACATAAACCTTAGAACCCACAGATTTGA[T/G]TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG
+##   Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 1                       37             10      123219423      dbSNP
+##   Sequence_Orientation.des                     Ilmn_Id.des Bead_Types.Assay.des
+## 1                  FORWARD 10_123219423-128_B_F_2127976125                    1
+##   Assay_Type.des Coordinate.int.des      map.des
+## 1     InfiniumII          123219423 10.123219423
+
+## good, a strand unambiguous SNP! I can work with this...
+
+# design alleles are T/G
+# since T is allele A, I know that design is also BOT. this matches the ILMN.Strand entry.
+# ..test this out for other SNPs
+table(snp.cstm$SNP[snp.cstm$ILMN.Strand=="BOT"])
+## [G/C] [T/A] [T/C] [T/G] 
+##  2671  2002 61422 14042 ## for strand unambiguous, all BOT have "T" as allele A
+
+table(snp.cstm$SNP[snp.cstm$ILMN.Strand=="TOP"])
+## [A/C] [A/G] [A/T] [C/G] 
+## 14069 60146  1850  2806 ## for strand unambiguous, all TOP have "A" as allele A - this is good
+
+## what about dbSNP Strand. BLAT the source seq and look in Genome Browser for rsIDs - no public rsID there.
+
+## look at the relation between _F_ and _R_ in Ilmn_Id.des and the Sequence_Orientation.des
+fwd.per.id <- grep("_F_",cstm.comb$Ilmn_Id.des) # gives row indes
+rev.per.id <- grep("_R_",cstm.comb$Ilmn_Id.des)
+
+table(cstm.comb$Sequence_Orientation.des[fwd.per.id])
+## FORWARD REVERSE 
+##   77043    5917 #ok, so still not sure what Sequence_Orientation is
+
+table(cstm.comb$Sequence_Orientation.des[rev.per.id])
+
+#### to get design alleles: "SNP" column
+#### to get TOP alleles: ILMN.Strand field - gives Ilmn Strand of design alleles (99% sure of this at this point)
+#### to get FWD: undecided - got Cathy's blessing to leave out FWD mappings
+#### to get plus: BLAT Sequence.des, compare SNP inside Sequence.des to "SNP" column to determine of design SNPs are+ or - strand
+
+###### BLAT the Sequence.des sequences - test set of 100
+setwd("/projects/cidr/Ambrosone/sarahcn/blat")
+blat.test <- cstm.comb[1:100,c("Name","Sequence.des")]
+head(blat.test)
+source("/projects/geneva/geneva_sata/sarahcn/BLAT_resources/R/run_blat.R")
+blat.test.out <- run.blat(blat.test,return.result=TRUE)
+dim(blat.test.out) # 129 25
+sum(blat.test.out$top.hit) # 104
+
+## for run on full set, write out a FASTA file for all 159K SNPs
+library(Biostrings)
+seqs <- cstm.comb$Sequence.des
+names(seqs) <- cstm.comb$Name
+dna <- BStringSet(seqs)
+fasta.fn <- paste(dir,"sarahcn/blat/designSequence_159036.fa",sep="")
+writeXStringSet(dna, fasta.fn)
+
+## submit in batch - ./submit_blat.R
+########### pick back up here
+
+
+### make columns that we can then feed to make.allele.mappings
+
+##########
+## Process BLAT results
+##########
+## 2/7/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# read back in the merge of the Ambrosone manifest with the design manifest (I g'zipped it)
+fn.in <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz", sep="")
+cstm.comb <- read.table(gzfile(fn.in), as.is=TRUE, header=TRUE)
+dim(cstm.comb); names(cstm.comb)
+## [1] 159036     23
+##  [1] "Name.match"               "Name"                    
+##  [3] "Ch"                       "Position"                
+##  [5] "SNP"                      "Plus.Minus.Strand"       
+##  [7] "ILMN.Strand"              "Customer.Strand"         
+##  [9] "exome.std"                "map"                     
+## [11] "int.id"                   "Locus_Name.des"          
+## [13] "Sequence.des"             "Genome_Build_Version.des"
+## [15] "Chromosome.des"           "Coordinate.des"          
+## [17] "Source.des"               "Sequence_Orientation.des"
+## [19] "Ilmn_Id.des"              "Bead_Types.Assay.des"    
+## [21] "Assay_Type.des"           "Coordinate.int.des"      
+## [23] "map.des"             
+
+# need to understand relation between design alleles ("SNP") and the Sequence from the design manifest
+attach(cstm.comb)
+table(nchar(Sequence.des)) ## not the same length
+range(nchar(Sequence.des)) # [1]  68 272 - good that min is already up to 68 chars - (BLAT min is ~18, I think)
+
+# extract the "[a0/a1]" part from the Sequence
+seq1 <- strsplit(Sequence.des, "[", fixed=TRUE) # returns a list
+
+seq1[[1]]
+## [1] "CAAGAAGGAGTCATTTGCCAAAGTGAAATAGCACATAAACCTTAGAACCCACAGATTTGA"    
+## [2] "T/G]TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG"
+
+## get second element of the list
+seq2 <- sapply(seq1, "[[", 2)
+length(seq2)
+# [1] 159036
+head(seq2)
+## [1] "T/G]TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG"
+## [2] "T/G]GTGTTGGGGAGGGAGGATGAGTCAGAGATTCCACCCTTCAGAGGGGGCAGCCTAATATGG"
+## [3] "T/C]GACTTAGGTATGCCTGGACTTTCAGACTGGAGCCACGGCTCTGGCCAGGAACCAGCTGTG"
+## [4] "A/C]AGCAAGTGCCTGTCTCAGTGGCAGAGCGGCACCTGAGCCAGGTGAGGCTCGCTCCTCCAG"
+## [5] "A/G]CAAGTGCCTGTCTCAGTGGCAGAGCGGCACCTGAGCCAGGTGAGGCTCGCTCCTCCAGGC"
+## [6] "T/C]GGCACCTGAGCCAGGTGAGGCTCGCTCCTCCAGGCCCTGTCTCTAGCAAGCCTGGCCAAT"
+
+# strip off part after "]", again using stringsplit
+seq3 <- strsplit(seq2, "]", fixed=TRUE)
+length(seq3)
+## [1] 159036
+seq3[[1]]
+## [1] "T/G"                                                         
+## [2] "TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG"
+
+# get first element of every list
+seq4 <-  sapply(seq3, "[[", 1)
+length(seq4); head(seq4)
+## [1] "T/G" "T/G" "T/C" "A/C" "A/G" "T/C"
+
+## add the brackets back, and then add to dataframe
+seq5 <- paste("[", seq4, "]", sep="")
+head(seq5)
+## [1] "[T/G]" "[T/G]" "[T/C]" "[A/C]" "[A/G]" "[T/C]"
+
+detach(cstm.comb)
+
+cstm.comb$Sequence.des.SNP <- seq5
+
+## see if SNP in Sequence.des matches SNP from Ambrosone custom
+table(cstm.comb$SNP==cstm.comb$Sequence.des.SNP)
+## FALSE  TRUE 
+## 76225 82811
+
+# ok, not all match. preview ones that don't match - presuming they are reverse complements, not different alleles altogether?
+head(cstm.comb[cstm.comb$SNP!=cstm.comb$Sequence.des.SNP,
+               c("Name.match","SNP","Ilmn_Id.des","Sequence_Orientation.des","Sequence.des.SNP")])
+##                Name.match   SNP                     Ilmn_Id.des
+## 3  Ambrosome_10_123219543 [A/G] 10_123219543-128_T_R_2127976134
+## 9  Ambrosome_10_123263313 [A/C] 10_123263313-128_T_R_2127976148
+## 10 Ambrosome_10_123274713 [A/G] 10_123274713-128_T_R_2127976150
+## 11 Ambrosome_10_123274727 [A/G] 10_123274727-128_T_R_2127976152
+## 13 Ambrosome_10_123310930 [T/C] 10_123310930-128_B_R_2127976158
+## 14 Ambrosome_10_123313514 [T/C] 10_123313514-128_B_R_2127976162
+##    Sequence_Orientation.des Sequence.des.SNP
+## 3                   FORWARD            [T/C]
+## 9                   FORWARD            [T/G]
+## 10                  FORWARD            [T/C]
+## 11                  FORWARD            [T/C]
+## 13                  FORWARD            [A/G]
+## 14                  FORWARD            [A/G]
+
+with(cstm.comb[cstm.comb$SNP!=cstm.comb$Sequence.des.SNP,],
+     table(SNP, Sequence.des.SNP))
+
+## ah, some of them are indels - where "SNP" is [I/D] or [D/I] and the Sequence.des.SNP has verbose alleles
+with(cstm.comb[cstm.comb$SNP!=cstm.comb$Sequence.des.SNP &
+               !is.element(cstm.comb$SNP, c("[D/I]","[I/D]")),],
+     table(SNP, Sequence.des.SNP))
+##        Sequence.des.SNP
+## SNP     [A/C] [A/G] [A/T] [C/G] [T/C] [T/G]
+##   [A/C]     0     0     0     0     0  6760
+##   [A/G]     0     0     0     0 28615     0
+##   [G/C]     0     0     0  2671     0     0
+##   [T/A]     0     0  2002     0     0     0
+##   [T/C]     0 29330     0     0     0     0
+##   [T/G]  6819     0     0     0     0     0
+
+## ah ok, where Sequence.des.SNP doesn't equal SNP, they alleles are reverse complements - so we do have the same variant
+
+## will need to incorporate this info when we deal with BLAT results of Sequence.des
+
+## write cstm.comb with this extra info ("Sequence.des.SNP") in case we need to pick back up with it later
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt", sep="")
+write.table(cstm.comb, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE)
+
+
+## Parse BLAT results from custom manifest - 2/10/2014
+blat.rslt <-  getobj(paste(dir, "/sarahcn/blat/blatReslt.Rdata",sep=""))
+dim(blat.rslt); head(blat.rslt,4)
+[## 1] 1992274      25
+##   match mismatch repmatch Ns Q_gap_count Q_gap_bases T_gap_count T_gap_bases
+## 1   121        0        0  0           1           1           0           0
+## 2   121        0        0  0           1           1           0           0
+## 3   121        0        0  0           1           1           0           0
+## 4   121        0        0  0           1           1           0           0
+##   strand                 Q_name Q_size Q_start Q_end T_name    T_size   T_start
+## 1      + Ambrosome_10_123219423    122       0   122  chr10 135534747 123219362
+## 2      + Ambrosome_10_123219462    122       0   122  chr10 135534747 123219401
+## 3      + Ambrosome_10_123219543    122       0   122  chr10 135534747 123219482
+## 4      + Ambrosome_10_123220554    122       0   122  chr10 135534747 123220493
+##       T_end block_count blocksizes qStarts              tStarts score
+## 1 123219483           2     60,61,   0,61, 123219362,123219422,   120
+## 2 123219522           2     60,61,   0,61, 123219401,123219461,   120
+## 3 123219603           2     60,61,   0,61, 123219482,123219542,   120
+## 4 123220614           2     60,61,   0,61, 123220493,123220553,   120
+##   pct.identity id top.hit
+## 1         99.2  1    TRUE
+## 2         99.2  2    TRUE
+## 3         99.2  3    TRUE
+## 4         99.2  4    TRUE
+
+## custm.comb is our data frame of 159036 custom SNPs - we have BLAT results of the "Sequence.des" sequence. We want to (1) find the BLAT rslt at the right location and (2) determine if the sequence is (+) or (-) strand.
+
+table(blat.rslt$top.hit)
+##    FALSE    TRUE 
+## 1804038  188236
+
+## first let's look for location matches in top hits only
+blat.top <- blat.rslt[blat.rslt$top.hit,]
+sum(duplicated(blat.top$Q_name)) # 30193 - we still have many SNPs that have > 1 "best in genome" hit
+
+table(is.element(cstm.comb$Name, blat.top$Q_name))
+ ## FALSE   TRUE 
+ ##   993 158043 ## ah, ok - so not all of our custom SNPS have top hit BLAT
+
+table(is.element(cstm.comb$Name, blat.rslt$Q_name))
+ ## FALSE   TRUE 
+ ##   417 158619   # ah, some don't even have any BLAT hits.
+
+### Next step:
+# 1) Make sure we have reasonably good hits at the right locations
+# 2) Re-run BLAT wtih less stringent criteria for
+ ## (a) the 417 that didn't yield any BLAT results with default settings
+ ## (b) any additional sequences that didn't have a match at the right location
+
+
+# make a field in BLAT results to match in input chrom
+blat.rslt$chrom <- sub("chr","",blat.rslt$T_name)
+head(unique(blat.rslt$T_name))
+## [1] "chr10" "chr13" "chr4"  "chr3"  "chr2"  "chr8"
+head(unique(blat.rslt$chrom))
+##  "10" "13" "4"  "3"  "2"  "8" 
+
+# review chrom field in BLAT input (i.e. expected location)
+head(unique(cstm.comb$Chromosome.des))
+## [1] "10" "11" "14" "16" "18" "19"
+
+## make preliminary BLAT merge based on chromosome alone
+blat.comb <- merge(cstm.comb[,c("int.id","Name","Sequence.des","Chromosome.des","Coordinate.des","Sequence.des.SNP")],
+                   blat.rslt, by.x=c("Name","Chromosome.des"), by.y=c("Q_name","chrom"),
+                   all.x=TRUE, all.y=FALSE, sort=FALSE)
+dim(blat.comb)
+## [1] 250995     30
+
+sum(duplicated(blat.comb$Name))  #  91959 -- ok, so we duplicated ~92K rows where > 1 BLAT results was on right chrom - will need to narrow down on bp location
+
+## how many had no BLAT match on the right chrom?
+ table(is.na(blat.comb$strand))
+##  FALSE   TRUE 
+## 250081    914
+
+table(is.element(blat.comb$Name[is.na(blat.comb$strand)], blat.rslt$Q_name))
+ ## FALSE  TRUE 
+ ##  417   497 # of those with no BLAT result on right chrom, 417 didn't have any BLAT result and 497 had a BLAT result but on wrong chrom
+
+## start vector of SNP Names that need blat rerun
+## currently the 914 that didn't have BLAT result on the right chrom 
+blat.rerun <- unique(blat.comb$Name[is.na(blat.comb$strand)])
+length(blat.rerun)  # 914
+
+## returning to those with BLAT results on right chrom - hone in on right bp regions
+ blat.comb[1,]
+##                     Name Chromosome.des int.id
+## 1 Ambrosome_10_123219423             10      1
+##                                                                                                                    Sequence.des
+## 1 CAAGAAGGAGTCATTTGCCAAAGTGAAATAGCACATAAACCTTAGAACCCACAGATTTGA[T/G]TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG
+##   Coordinate.des Sequence.des.SNP match mismatch repmatch Ns Q_gap_count
+## 1      123219423            [T/G]   121        0        0  0           1
+##   Q_gap_bases T_gap_count T_gap_bases strand Q_size Q_start Q_end T_name
+## 1           1           0           0      +    122       0   122  chr10
+##      T_size   T_start     T_end block_count blocksizes qStarts
+## 1 135534747 123219362 123219483           2     60,61,   0,61,
+##                tStarts score pct.identity id top.hit
+## 1 123219362,123219422,   120         99.2  1    TRUE
+ 
+# Coordinate.des field (bp location of SNP) should be in between T_start and T_end
+blat.comb$snp.in.blat.match <- blat.comb$Coordinate.des >= blat.comb$T_start &
+                               blat.comb$Coordinate.des <= blat.comb$T_end
+
+with(blat.comb[!is.na(blat.comb$strand),], table(snp.in.blat.match, exclude=NULL)) 
+## snp.in.blat.match
+##  FALSE   TRUE   <NA> 
+##  91991 158090      0
+
+## nice, looks like this matching on bp location removes most of our duplicate rows
+
+# make a df of SNPs where we have good candidate BLAT match - chrom and bp locations seem right
+blat.match <- blat.comb[!is.na(blat.comb$strand) & blat.comb$snp.in.blat.match,]
+dim(blat.match) 
+# [1] 158090     31
+
+## any duplicated records?
+sum(duplicated(blat.match$Name)) # 113
+
+## this means there was > 1 BLAT result on right chrom and containing the right bp location
+## look at a dup pair
+dups <- unique(blat.match$Name[duplicated(blat.match$Name)]); length(dups) # 92
+blat.match[blat.match$Name==dups[1],] 
+##                      Name Chromosome.des int.id
+## 3118 Ambrosome_rs10128636             11   2310
+## 3123 Ambrosome_rs10128636             11   2310
+##                                                                                                                       Sequence.des
+## 3118 CTCTGTGAGATGAATGCACACATCACAAATTGGTTTCACAGATAGCTCCTTCTAGTTTAT[A/C]CTGCGATATTCGCTTTTTTGGTGTTGGCTTCAATGAGCTCCCAAATGTCCTTTCACAGAA
+## 3123 CTCTGTGAGATGAATGCACACATCACAAATTGGTTTCACAGATAGCTCCTTCTAGTTTAT[A/C]CTGCGATATTCGCTTTTTTGGTGTTGGCTTCAATGAGCTCCCAAATGTCCTTTCACAGAA
+##      Coordinate.des Sequence.des.SNP match mismatch repmatch Ns Q_gap_count
+## 3118       51267776            [A/C]    96        6        0  0           2
+## 3123       51267776            [A/C]   121        0        0  0           1
+##      Q_gap_bases T_gap_count T_gap_bases strand Q_size Q_start Q_end T_name
+## 3118          10           3       61388      -    122       0   112  chr11
+## 3123           1           0           0      +    122       0   122  chr11
+##         T_size  T_start    T_end block_count   blocksizes      qStarts
+## 3118 135006516 51239572 51301062           4 46,12,15,29, 10,64,76,93,
+## 3123 135006516 51267715 51267836           2       60,61,        0,61,
+##                                   tStarts score pct.identity    id top.hit
+## 3118 51239572,51301004,51301017,51301033,    85         89.7 18800   FALSE
+## 3123                   51267715,51267775,   120         99.2 18767    TRUE
+##      snp.in.blat.match
+## 3118              TRUE
+## 3123              TRUE
+
+# can we chose a record based on top hit?
+table(blat.match$top.hit[is.element(blat.match$Name, dups)])
+## FALSE  TRUE 
+##   110    95
+
+## store ids of BLAT results to remove
+blat.rm <- blat.match$id[is.element(blat.match$Name, dups) & !blat.match$top.hit]
+length(blat.rm) # 110
+
+blat.match <- blat.match[!is.element(blat.match$id, blat.rm),]
+dim(blat.match) 
+## [1] 157980     31
+
+# ok, so narrowing down to top hits still leaves 95 records for 92 SNPs -- look at who is still duplicated
+dups <- unique(blat.match$Name[duplicated(blat.match$Name)]); length(dups) # 4
+dups 
+## [1] "Ambrosome_rs72622682"      "Ambrosome_rs72707300"     
+## [3] "Ambrosome_rs9884111"       "Ambrosome_seq_rs116441144"
+
+blat.match[blat.match$Name==dups[1],] 
+##                       Name Chromosome.des int.id
+## 129350 Ambrosome_rs72622682              2  91187
+## 129351 Ambrosome_rs72622682              2  91187
+##                                                                                                                         Sequence.des
+## 129350 CCTCCTTGGTTCCTGGCCCCATCCATCTTCAGAGCCAACTGTTTGAAGACGGAAGGGGCC[A/G]GGAACCAAGGAAGAGGGGAAAAGAAGACATTCAAATTTGGGCCAGGAACCAAGGAGGGGG
+## 129351 CCTCCTTGGTTCCTGGCCCCATCCATCTTCAGAGCCAACTGTTTGAAGACGGAAGGGGCC[A/G]GGAACCAAGGAAGAGGGGAAAAGAAGACATTCAAATTTGGGCCAGGAACCAAGGAGGGGG
+##        Coordinate.des Sequence.des.SNP match mismatch repmatch Ns Q_gap_count
+## 129350       80771368            [A/G]   121        0        0  0           1
+## 129351       80771368            [A/G]    35        0        0  0           0
+##        Q_gap_bases T_gap_count T_gap_bases strand Q_size Q_start Q_end T_name
+## 129350           1           0           0      +    122       0   122   chr2
+## 129351           0           1         158      -    122      85   120   chr2
+##           T_size  T_start    T_end block_count blocksizes qStarts
+## 129350 243199373 80771307 80771428           2     63,58,   0,64,
+## 129351 243199373 80771306 80771499           2     19,16,   2,21,
+##                   tStarts score pct.identity     id top.hit snp.in.blat.match
+## 129350 80771307,80771370,   120         99.2 854438    TRUE              TRUE
+## 129351 80771306,80771483,    34         97.2 854439    TRUE              TRUE
+
+## yikes, on diff strands - could ust pct identity to choose top - want less gap bases
+
+## look at the other 3 dup pairs (i.e. where both matches are top hits)
+blat.match[blat.match$Name==dups[2],]
+blat.match[blat.match$Name==dups[3],]
+blat.match[blat.match$Name==dups[4],]  
+ 
+## make another vector of BLAT ids to remove (i.e. for each pair, the lower score)
+blat.rm <- c(854439, 857496, 1156117, 1328396)
+dim(blat.match) # [1] 157980     31
+blat.match <- blat.match[!is.element(blat.match$id, blat.rm),]
+dim(blat.match) # [1] 157976     31
+
+## save this BLAT results - matching records for 157,976 out of 159,036 SNPs
+sum(duplicated(blat.match$Name))  # 0
+
+# look at quality of BLAT matches
+table(blat.match$top.hit)
+## FALSE   TRUE 
+##    818 157158 # majority are a 'near best hit in genome' match
+
+summary(blat.match$pct.identity) 
+  ##  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  ## 92.40   99.20   99.20   99.18   99.20  100.00 
+
+## hmm, look at pct identity < 95%
+sum(blat.match$pct.identity<95) # 11 records
+
+# spot check one of these recods 
+head(blat.match[blat.match$pct.identity<95,],1)
+##                      Name Chromosome.des int.id
+## 17831 Ambrosome_rs1129192             19  12612
+##                                                                                                                        Sequence.des
+## 17831 ACAGGTTCCCCAGGGAGTCCCTCATGCACCCGTCGGCCTGCGCTGACTGAGCACCCACAG[T/C]GTATCAGACTCGCACTCTGCCCAGCCCCGTGCCTGCGGTGGGCTCACATGTGTAGCAACC
+##       Coordinate.des Sequence.des.SNP match mismatch repmatch Ns Q_gap_count
+## 17831         422592            [T/C]   115        6        0  0           1
+##       Q_gap_bases T_gap_count T_gap_bases strand Q_size Q_start Q_end T_name
+## 17831           1           0           0      +    122       0   122  chr19
+##         T_size T_start  T_end block_count blocksizes qStarts        tStarts
+## 17831 59128983  422531 422652           2     60,61,   0,61, 422531,422591,
+##       score pct.identity     id top.hit snp.in.blat.match
+## 17831   108         94.3 119213   FALSE              TRUE
+
+## look at BLAT top hits for this seq
+blat.rslt[blat.rslt$Q_name=="Ambrosome_rs1129192" & blat.rslt$top.hit,]  # no top hit
+ 
+blat.rslt[blat.rslt$Q_name=="Ambrosome_rs1129192",] # ah, ok - the only BLAT match
+##        match mismatch repmatch Ns Q_gap_count Q_gap_bases T_gap_count
+## 119213   115        6        0  0           1           1           0
+##        T_gap_bases strand              Q_name Q_size Q_start Q_end T_name
+## 119213           0      + Ambrosome_rs1129192    122       0   122  chr19
+##          T_size T_start  T_end block_count blocksizes qStarts        tStarts
+## 119213 59128983  422531 422652           2     60,61,   0,61, 422531,422591,
+##        score pct.identity     id top.hit chrom
+## 119213   108         94.3 119213   FALSE    19
+
+# verified with web BLAT search that this is only BLAT match - rs1129192 is in center of sez and C is a + strand allele
+
+######## ok, feel good about this set of 157,976 matches. save as csv
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set1BLATmatches.txt", sep="")
+write.table(blat.match, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE)
+
+## will return to these BLAT matches once I've gotten a good blat results for the remaining 1060 variants
+length(setdiff(cstm.comb$Name, blat.match$Name))  # 1060
+blat.miss <- setdiff(cstm.comb$Name, blat.match$Name)
+ 
+ ## I've already collected 914 SNP names to rerun - for the 417 with no BLAT, the 497 with no BLAT on right chrom, and 
+length(blat.rerun) # 914
+table(is.element(blat.rerun, blat.miss)) # T for 914
+table(is.element(blat.miss, blat.rerun))
+## FALSE  TRUE 
+##   146   914 # 146 must be count of BLAT results that matched on chrom but SNP wasn't in BLAT result region
+ 
+blat.rerun <- blat.miss
+length(blat.rerun) # 1060
+ 
+# spot check a few of these SNP recors (sanity check for process so far)
+cstm.comb[cstm.comb$Name==blat.rerun[45],]
+##               Name.match                Name Ch  Position   SNP
+## 45240 Ambrosome_rs2519127 Ambrosome_rs2519127  9 136532476 [T/C]
+##       Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 45240               BOT         BOT             BOT     FALSE 9.136532476
+##       int.id Locus_Name.des
+## 45240  45240      rs2519127
+##                                                                                                                        Sequence.des
+## 45240 GTAGCTGGGATTACAGGCACCCACCACCATGCCCGGCTAATTTTGTATTTTTAATAGAGA[T/C]GGGGTTTCATCATGTTGGCCAGGCTGGTCTCGAACTCCTGACCTCAAGTGATCTGCCCAC
+##       Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 45240                     37.1              9      136532476      dbsnp
+##       Sequence_Orientation.des                  Ilmn_Id.des
+## 45240                  REVERSE rs2519127-131_B_R_2075923752
+##       Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 45240                    1     InfiniumII          136532476 9.136532476
+##       Sequence.des.SNP
+## 45240            [T/C]
+
+blat.rslt[blat.rslt$Q_name==blat.rerun[45],] # no matches
+
+dim(blat.rslt[blat.rslt$Q_name==blat.rerun[600],]) # 14 BLAT hits
+sort(as.numeric(unique(blat.rslt[blat.rslt$Q_name==blat.rerun[600],"chrom"])))
+#  [1]  1  2  3  4  8  9 10 12 14 16 17 19
+
+cstm.comb[cstm.comb$Name==blat.rerun[600],] # we'd need a BLAT result on chr22
+##                 Name.match                 Name Ch Position   SNP
+## 72039 Ambrosome_rs58164612 Ambrosome_rs58164612 22 41052675 [T/C]
+##       Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 72039               BOT         BOT             BOT     FALSE 22.41052675
+##       int.id Locus_Name.des
+## 72039  72039     rs58164612
+##                                                                                                                        Sequence.des
+## 72039 TTATTTACTTTTTTTGAGATGGAGTTTTGCTCTTGTTGCCTAGGCTGGAGTGCAATGGCG[T/C]GATCTCAGCTTACTGCAACTTCTGCCTCCCAGGTTCAAGTGATTCTCCTGTCTCAGCCTC
+##       Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 72039                     37.1             22       41052675      dbsnp
+##       Sequence_Orientation.des                   Ilmn_Id.des
+## 72039                  FORWARD rs58164612-131_B_F_2091134667
+##       Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 72039                    1     InfiniumII           41052675 22.41052675
+##       Sequence.des.SNP
+## 72039            [T/C]
+
+##########
+## BLAT results, round 2 
+##########
+## 2/10/2014
+
+## make FASTA file for 1060 sequences we need to rerun for BLAT - will use web settings for this rerun
+cstm.rerun <- cstm.comb[is.element(cstm.comb$Name, blat.rerun),]
+dim(cstm.rerun)  # 1060 24
+  
+library(Biostrings)
+seqs <- cstm.rerun$Sequence.des
+names(seqs) <- cstm.rerun$Name
+dna <- BStringSet(seqs)
+fasta.fn <- paste(dir,"sarahcn/blat/designSequence_1060_BLATrun2.fa",sep="")
+writeXStringSet(dna, fasta.fn)
+
+## run BLAT with web settings
+setwd(paste(dir,"sarahcn/blat/",sep=""))
+
+# library(Biostrings)
+# library(bitops)
+
+# source BLAT function
+source("/projects/geneva/geneva_sata/sarahcn/BLAT_resources/R/run_blat.R")
+
+# read in FASTA file
+
+# run function
+# save result as an R object
+rslt <- run.blat(fasta.fn, make.fasta=FALSE, return.result=TRUE,
+                 stepSize=5, repMatch=2253, minScore=20)
+
+save(rslt, file="blatReslt_run2.Rdata")
+
+##########
+## Process BLAT results, round 2 
+##########
+## 2/10/2014
+
+## go through same steps as for BLAT run 1  (See above, "## Parse BLAT results from custom manifest - 2/10/2014")
+blat.rslt <- rslt
+ 
+dim(blat.rslt); head(blat.rslt,4)
+## [1] 220910     25
+##   match mismatch repmatch Ns Q_gap_count Q_gap_bases T_gap_count T_gap_bases
+## 1    86        7        0  0           1           2           0           0
+## 2    70        4        0  0           1           6           1           4
+## 3    89        6        0  0           1           8           1           7
+## 4    56        3        0  0           0           0           0           0
+##   strand                Q_name Q_size Q_start Q_end T_name    T_size  T_start
+## 1      + Ambrosome_19_17369493    122       1    96   chrY  59373566  7210152
+## 2      + Ambrosome_19_17369493    122      10    90   chrY  59373566 21665626
+## 3      + Ambrosome_19_17369493    122       0   103   chrX 155270560 39847471
+## 4      + Ambrosome_19_17369493    122       1    60   chrX 155270560 70126552
+##      T_end block_count blocksizes qStarts            tStarts score pct.identity
+## 1  7210245           2     59,34,   1,62,   7210152,7210211,    78         91.5
+## 2 21665704           2     50,24,  10,66, 21665626,21665680,    64         92.1
+## 3 39847573           2     60,35,   0,68, 39847471,39847538,    81         91.8
+## 4 70126611           1        59,      1,          70126552,    53         94.9
+##   id top.hit
+## 1  1   FALSE
+## 2  2   FALSE
+## 3  3   FALSE
+## 4  4   FALSE
+
+# wow, 220K+ results for 1K input sequencies
+length(unique(blat.rslt$Q_name)) # 1020 sequences - so still missing results for 40 SNPs. May try manual BLAT searches for those ones
+
+table(is.element(blat.rerun, blat.rslt$Q_name))
+## FALSE  TRUE 
+##    40  1020
+ 
+table(blat.rslt$top.hit)
+##  FALSE   TRUE 
+## 218644   2266
+
+# make a field in BLAT results to match in input chrom
+blat.rslt$chrom <- sub("chr","",blat.rslt$T_name)
+head(unique(blat.rslt$T_name))
+## [1] "chrY"           "chrX"           "chr9"           "chr8"          
+## [5] "chr7"           "chr6_ssto_hap7"
+
+head(unique(blat.rslt$chrom))
+## [1] "Y"           "X"           "9"           "8"           "7"          
+## [6] "6_ssto_hap7"
+
+## make preliminary BLAT merge based on chromosome alone
+blat.comb <- merge(cstm.comb[is.element(cstm.comb$Name, blat.rerun),
+                             c("int.id","Name","Sequence.des","Chromosome.des","Coordinate.des","Sequence.des.SNP")],
+                   blat.rslt, by.x=c("Name","Chromosome.des"), by.y=c("Q_name","chrom"),
+                   all.x=TRUE, all.y=FALSE, sort=FALSE)
+dim(blat.comb) #  [1] 10642    30
+
+length(unique(blat.comb$Name)) # 1060
+table(is.na(blat.comb$strand)) 
+## FALSE  TRUE 
+## 10529   113
+
+table(is.element(blat.comb[is.na(blat.comb$strand),"Name"],blat.rslt$Q_name))
+## FALSE  TRUE 
+##    40    73  ## 73 SNPs has a BLAT result but not on the right chrom
+
+
+## for those with BLAT results on right chrom - hone in on right bp regions 
+
+# Coordinate.des field (bp location of SNP) should be in between T_start and T_end
+blat.comb$snp.in.blat.match <- blat.comb$Coordinate.des >= blat.comb$T_start &
+                               blat.comb$Coordinate.des <= blat.comb$T_end
+
+with(blat.comb[!is.na(blat.comb$strand),], table(snp.in.blat.match, exclude=NULL))
+## snp.in.blat.match
+## FALSE  TRUE  <NA> 
+##  9666   863     0  # 863 have BLAT result on right chrom and with SNP in right region
+
+matching.region <- !is.na(blat.comb$strand) & blat.comb$snp.in.blat.match
+length(unique(blat.comb$Name[matching.region])) # 859
+
+length(unique(blat.comb$Name[!is.na(blat.comb$strand) & !blat.comb$snp.in.blat.match &
+                             !is.element(blat.comb$Name, blat.comb$Name[matching.region])])) # 88 SNPs has BLAT on right chrom but not right region
+
+# make a df of SNPs where we have good candidate BLAT match - chrom and bp locations seem right
+blat.match <- blat.comb[!is.na(blat.comb$strand) & blat.comb$snp.in.blat.match,]
+dim(blat.match) # [1] 863  31
+
+## any duplicated records?
+sum(duplicated(blat.match$Name)) # 4
+
+## this means there was > 1 BLAT result on right chrom and containing the right bp location
+## look at a dup pair
+dups <- unique(blat.match$Name[duplicated(blat.match$Name)]); length(dups) # 4
+blat.match[blat.match$Name==dups[1],]  
+
+## visually inspect these two dup records and pick the best (preferably top.hit, max score, max pct.identity)
+blat.match[blat.match$Name==dups[2],]
+blat.match[blat.match$Name==dups[3],]
+blat.match[blat.match$Name==dups[4],]
+ 
+## collect BLAT Ids to remove
+blat.rm <- c(2326,90590,104379,201358)
+
+length(blat.rm) # 4
+
+dim(blat.match); length(unique(blat.match$Name))
+## [1] 863  31
+## [1] 859
+ 
+blat.match <- blat.match[!is.element(blat.match$id, blat.rm),]
+dim(blat.match); length(unique(blat.match$Name))
+## [1] 859  31
+## [1] 859
+
+# look at quality of BLAT matches
+table(blat.match$top.hit)
+## FALSE  TRUE 
+##   208   651
+
+summary(blat.match$pct.identity) ## still very high mean scores
+  ##  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  ## 91.50   99.20   99.20   99.17   99.20   99.50 
+ 
+
+# spot check one of these recods 
+head(blat.match[blat.match$pct.identity<95,],1)
+ ##                     Name Chromosome.des int.id
+## 4309 Ambrosome_rs71418261             14  89044
+##                                                                                                                       Sequence.des
+## 4309 TAGCTACGTAGTATTTAAAATTATATTTTATATGAAAGCAATCGGAAATTTTAAATGCAC[T/C]TTTAAAAAGTATCCTTAAAATAGGTGAGGATGGACTGGGGATGGAGGGTTACGCCTGTAA
+##      Coordinate.des Sequence.des.SNP match mismatch repmatch Ns Q_gap_count
+## 4309       22660819            [T/C]   107        7        0  0           2
+##      Q_gap_bases T_gap_count T_gap_bases strand Q_size Q_start Q_end T_name
+## 4309           8           1           6      +    122       0   122  chr14
+##         T_size  T_start    T_end block_count blocksizes  qStarts
+## 4309 107349540 22660758 22660878           3  60,27,27, 0,61,95,
+##                          tStarts score pct.identity    id top.hit
+## 4309 22660758,22660818,22660851,    97         91.5 90146   FALSE
+##      snp.in.blat.match
+## 4309              TRUE
+
+# checked result in UCSC web query browser and rs71418261 does occur in the middle with C as plus(+) strand allele
+
+# save this set of matching BLAT results from round 2
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set2BLATmatches.txt", sep="")
+write.table(blat.match, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE) 
+
+length(blat.rerun)
+## [1] 1060 
+blat.rerun <- setdiff(blat.rerun, blat.match$Name)
+length(blat.rerun) # 201
+
+##########
+## BLAT results, round 3  
+##########
+## 2/10/2014
+
+## make FASTA file for 201 sequences we need to rerun for BLAT - will most liberal settings for this rerun
+cstm.rerun <- cstm.comb[is.element(cstm.comb$Name, blat.rerun),]
+dim(cstm.rerun)  # 201 24 
+
+library(Biostrings)
+seqs <- cstm.rerun$Sequence.des
+names(seqs) <- cstm.rerun$Name
+dna <- BStringSet(seqs)
+fasta.fn <- paste(dir,"sarahcn/blat/designSequence_201_BLATrun3.fa",sep="")
+writeXStringSet(dna, fasta.fn)
+
+## run BLAT with web settings
+setwd(paste(dir,"sarahcn/blat/",sep=""))
+
+# run function
+# save result as an R object
+rslt <- run.blat(fasta.fn, make.fasta=FALSE, return.result=TRUE,
+                 stepSize=5, repMatch=2253, minScore=0, minIdentity=0)
+
+save(rslt, file="blatReslt_run3.Rdata") 
+
+##########
+## Process BLAT results, round 3 
+##########
+## 2/10/2014
+
+# repeating process for rounds 1 and 2 above - but allowing for the possibility that these 201 remain unmapped - i.e. the BLAT results look too poor
+
+blat.rslt <- rslt
+ 
+dim(blat.rslt); head(blat.rslt,4)
+## [1] 24841    25
+##   match mismatch repmatch Ns Q_gap_count Q_gap_bases T_gap_count T_gap_bases
+## 1    67       10        0  0           1           6           0           0
+## 2    95       15        0  0           1           6           0           0
+## 3    80        7        0  0           1           4           2           4
+## 4    37        2        0  0           1           4           1           3
+##   strand               Q_name Q_size Q_start Q_end T_name    T_size   T_start
+## 1      + Ambrosome_rs10417631    122      33   116   chr8 146364022   7984518
+## 2      + Ambrosome_rs10417631    122       0   116   chr4 191154276   9064221
+## 3      + Ambrosome_rs10417631    122      25   116   chr3 198022430 158306212
+## 4      + Ambrosome_rs10417631    122       0    43   chr3 198022430 190538928
+##       T_end block_count blocksizes   qStarts                        tStarts
+## 1   7984595           2     64,13,   33,103,               7984518,7984582,
+## 2   9064331           2     97,13,    0,103,               9064221,9064318,
+## 3 158306303           3   27,5,55, 25,52,61, 158306212,158306240,158306248,
+## 4 190538970           2      7,32,     0,11,           190538928,190538938,
+##   score pct.identity id top.hit
+## 1    56         85.9  1   FALSE
+## 2    79         85.6  2   FALSE
+## 3    70         88.9  3   FALSE
+## 4    33         90.2  4   FALSE
+
+length(unique(blat.rslt$Q_name))  # 173
+
+length(setdiff(blat.rerun, unique(blat.rslt$Q_name))) ## 28 - I think we can consider these un BLAT'able
+
+# make a field in BLAT results to match in input chrom
+blat.rslt$chrom <- sub("chr","",blat.rslt$T_name)
+head(unique(blat.rslt$T_name))
+
+## make preliminary BLAT merge based on chromosome alone
+blat.comb <- merge(cstm.comb[is.element(cstm.comb$Name, blat.rerun),
+                             c("int.id","Name","Sequence.des","Chromosome.des","Coordinate.des","Sequence.des.SNP")],
+                   blat.rslt, by.x=c("Name","Chromosome.des"), by.y=c("Q_name","chrom"),
+                   all.x=TRUE, all.y=FALSE, sort=FALSE)
+dim(blat.comb) #  1229 30
+
+length(unique(blat.comb$Name)) # 201
+table(is.na(blat.comb$strand))  # T for 102
+
+table(is.element(blat.comb[is.na(blat.comb$strand),"Name"],blat.rslt$Q_name))
+## FALSE  TRUE 
+##    28    74  # 74 SNPs had BLAT result but not on right chrom
+
+## thinking round 3 may not be useful
+# pick one record to spot check with web query to make sure we're not missing potential BLAT matches (i.e. of sufficient quality)
+
+head(intersect(blat.rslt$Q_name, blat.comb$Name[is.na(blat.comb$strand)]))
+## [1] "Ambrosome_rs10417631" "Ambrosome_rs10458127" "Ambrosome_rs11578995"
+## [4] "Ambrosome_rs12052052" "Ambrosome_rs12096640" "Ambrosome_rs12229453"
+
+chk <- "Ambrosome_rs10417631"
+cstm.comb[cstm.comb$Name==chk,]
+##               Name.match                 Name Ch Position   SNP
+## 4500 Ambrosome_rs10417631 Ambrosome_rs10417631 19 17123850 [G/C]
+##      Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map int.id
+## 4500               BOT         BOT             BOT     FALSE 19.17123850   4500
+##      Locus_Name.des
+## 4500     rs10417631
+##                                                                                                                       Sequence.des
+## 4500 caagaccagcctggccaacatggcaaaaccccatctctactaagtacaaaaattagccag[C/G]tgtggtggtgggcacctgtaatcccagctactcgggaggctgaggcaggagaattgcttg
+##      Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 4500                     37.1             19       17123850      dbsnp
+##      Sequence_Orientation.des                   Ilmn_Id.des
+## 4500                  FORWARD rs10417631-131_B_F_2112323431
+##      Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 4500                    2      InfiniumI           17123850 19.17123850
+##      Sequence.des.SNP
+## 4500            [C/G]
+
+blat.comb[blat.comb$Name==chk,] # No matching BLAT results
+
+blat.rslt[blat.rslt$Q_name==chk,] # nothign on chr 19
+sort(as.numeric(unique(blat.rslt[blat.rslt$Q_name==chk,"chrom"])))
+## [1]  1  2  3  4  7  8 16 17 18
+
+# strange, because I can get the right results with the web query browser.
+# Per FAQ it may not be possible to replicate web query exactly (http://genome.ucsc.edu/FAQ/FAQblat.html#blat5)
+# and I'm not going to do these 201 by hand.
+
+# we could try and use UCSC table browser to determine the + alleles
+# see how many of these have rsIDs
+head(blat.rerun)
+## [1] "Ambrosome_rs10134729" "Ambrosome_rs10417631" "Ambrosome_rs10417649"
+## [4] "Ambrosome_rs10428565" "Ambrosome_rs10458127" "Ambrosome_rs10815433"
+
+length(grep("rs",blat.rerun)) # 201 - all have rsIDs
+ 
+rsIDs.rerun <- sub("Ambrosome_","", blat.rerun) 
+rsIDs.rerun <- sub("seq_","",rsIDs.rerun)
+head(rsIDs.rerun) 
+## [1] "rs10134729" "rs10417631" "rs10417649" "rs10428565" "rs10458127"
+## [6] "rs10815433"
+
+## add in a few control SNPs - where we've already determined strand via BLAT (2 from run1, 2 from run2)
+rsIDs.rerun.cntls <- c(rsIDs.rerun, "rs10956365", "rs11086066", "rs10000941", "rs10072259")
+write.table(rsIDs.rerun.cntls, file=paste(dir,"sarahcn/alleleMappings/set3_rsIDs_plusControls.txt",sep=""),
+            row.names=FALSE, quote=FALSE, col.names=FALSE)
+
+##########
+## Process UCSC Table browser results 
+##########
+## 2/10/2014
+
+# did UCSC table browser query, with "snp138" table, on 201 SNPs where I couldnt' get a BLAT result, plus 4 additional "control" SNPs where I do have BLAT results
+
+# read in UCSC table browser result
+ucsc <- read.table(file=paste(dir, "sarahcn/alleleMappings/UCSC_tableBrowser_snp138_rslt.txt",sep=""),
+                   header=TRUE, as.is=TRUE, sep="\t", comment.char="")
+dim(ucsc); head(ucsc)
+## [1] 208   7
+##   X.chrom chromStart  chromEnd        name strand observed alleles
+## 1    chr1  201965660 201965661  rs10920298      +      A/G    A,G,
+## 2    chr1   10154635  10154636  rs11121517      +      C/T    C,T,
+## 3    chr1   10522121  10522122  rs11578995      +      A/C    A,C,
+## 4    chr1   10509388  10509389  rs12080975      +    C/G/T    C,T,
+## 5    chr1  154958066 154958067  rs12096640      +      C/T    C,T,
+## 6    chr1   10426157  10426158 rs145802113      +      A/G    A,G,
+
+# strand="Which DNA strand contains the observed alleles"
+# observed="The sequences of the observed alleles from rs-fasta files"
+# alleles="Observed alleles for which frequency data are available" 
+ 
+table(table(ucsc$name))
+##   1   2 
+## 202   3 # some duplicated records
+
+dups <- ucsc$name[duplicated(ucsc$name)]
+dups.df <- ucsc[is.element(ucsc$name, dups),]
+dups.df[order(dups.df$name),]
+##           X.chrom chromStart chromEnd       name strand observed alleles
+## 91           chrX    2422145  2422146  rs2316860      -      C/T    C,T,
+## 93           chrY    2372145  2372146  rs2316860      -      C/T    C,T,
+## 207 chr6_cox_hap2    4076552  4076553 rs35696625      -  A/C/G/T    A,G,
+## 208 chr6_qbl_hap6    3863006  3863007 rs35696625      -  A/C/G/T    A,G,
+## 92           chrX    1590656  1590657  rs5949204      +      A/G    A,G,
+## 94           chrY    1540656  1540657  rs5949204      +      A/G    A,G,
+
+# 2 of the duplicated records are due to psuedoautosomal records - the other is chr6 - but at least we're getting consistent strand mapping
+# keep the first instance for each of these and merge with the cstm.comb records for the 201
+
+ucsc$chrom <- sub("chr","",ucsc$X.chrom)
+
+# get the name to match on
+name.match <- as.data.frame(cbind(blat.rerun, rsIDs.rerun))
+head(name.match) 
+##            blat.rerun rsIDs.rerun
+## 1 Ambrosome_rs10134729  rs10134729
+## 2 Ambrosome_rs10417631  rs10417631
+## 3 Ambrosome_rs10417649  rs10417649
+## 4 Ambrosome_rs10428565  rs10428565
+## 5 Ambrosome_rs10458127  rs10458127
+## 6 Ambrosome_rs10815433  rs10815433
+
+ucsc$name.match <- name.match$blat.rerun[match(ucsc$name, name.match$rsIDs.rerun)]
+
+table(is.element(blat.rerun, ucsc$name.match)) # T for 201
+
+ 
+ucsc.comb <- merge(cstm.comb[is.element(cstm.comb$Name, blat.rerun),],
+                   ucsc[!duplicated(ucsc$name),],
+                   by.x="Name",by.y="name.match",all.x=TRUE, all.y=FALSE, sort=FALSE)
+
+dim(ucsc.comb); head(ucsc.comb,3) 
+## [1] 201  32
+##                   Name           Name.match Ch Position   SNP Plus.Minus.Strand
+## 1 Ambrosome_rs10134729 Ambrosome_rs10134729 14 37233312 [A/G]               BOT
+## 2 Ambrosome_rs10417631 Ambrosome_rs10417631 19 17123850 [G/C]               BOT
+## 3 Ambrosome_rs10417649 Ambrosome_rs10417649 19 18656035 [A/G]               BOT
+##   ILMN.Strand Customer.Strand exome.std         map int.id Locus_Name.des
+## 1         TOP             TOP     FALSE 14.37233312   2398     rs10134729
+## 2         BOT             BOT     FALSE 19.17123850   4500     rs10417631
+## 3         TOP             BOT     FALSE 19.18656035   4501     rs10417649
+##                                                                                                                    Sequence.des
+## 1 agaaagaaagaaagaaagaaagaaagaaagaaagaaggaaggaaggaaggaaggaaggaa[A/G]gaaggaaagaaggaaagaaggaaagaaggaaagaaggaaagaaagaaagaaagaaagaaa
+## 2 caagaccagcctggccaacatggcaaaaccccatctctactaagtacaaaaattagccag[C/G]tgtggtggtgggcacctgtaatcccagctactcgggaggctgaggcaggagaattgcttg
+## 3 tcctgcttcagcctcctgagtagctgggactacaggcacccgccaccatgcccagctaat[T/C]tgtatatttttagtagagacagggtttcaccatgttggccaggatggtctggaactcctg
+##   Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 1                     37.1             14       37233312      dbsnp
+## 2                     37.1             19       17123850      dbsnp
+## 3                     37.1             19       18656035      dbsnp
+##   Sequence_Orientation.des                   Ilmn_Id.des Bead_Types.Assay.des
+## 1                  FORWARD rs10134729-131_T_F_2091069512                    1
+## 2                  FORWARD rs10417631-131_B_F_2112323431                    2
+## 3                  FORWARD rs10417649-131_T_R_2091071365                    1
+##   Assay_Type.des Coordinate.int.des     map.des Sequence.des.SNP X.chrom
+## 1     InfiniumII           37233312 14.37233312            [A/G]   chr14
+## 2      InfiniumI           17123850 19.17123850            [C/G]   chr19
+## 3     InfiniumII           18656035 19.18656035            [T/C]   chr19
+##   chromStart chromEnd       name strand observed alleles chrom
+## 1   37233311 37233312 rs10134729      +      A/G    A,G,    14
+## 2   17123849 17123850 rs10417631      +      C/G    C,G,    19
+## 3   18656034 18656035 rs10417649      +      C/T    C,T,    19
+
+
+## ok, let's check that we're matching up on chromosome
+sum(ucsc.comb$chrom==ucsc.comb$Chromosome.des) # 198 match on chrom - look at 3 that don't
+
+ucsc.comb[ucsc.comb$chrom!=ucsc.comb$Chromosome.des,
+          c("Name","Ch", "Chromosome.des","Coordinate.int.des","Sequence.des.SNP",
+            "chromStart","chromEnd","strand","observed","chrom")]
+##                    Name Ch Chromosome.des Coordinate.int.des Sequence.des.SNP
+## 32  Ambrosome_rs2316860 XY             XY            2422146            [A/G]
+## 52 Ambrosome_rs35696625  6              6           32631252            [T/C]
+## 68  Ambrosome_rs5949204 XY             XY            1590657            [A/G]
+##    chromStart chromEnd strand observed      chrom
+## 32    2422145  2422146      -      C/T          X
+## 52    4076552  4076553      -  A/C/G/T 6_cox_hap2
+## 68    1590656  1590657      +      A/G          X
+
+## these 3 are ok - the chrom discrepancy is X vs XY (bp matches) and 6 vs. funky chr6
+## manually looking up rs35696625 in UCSC genome browser - A is plus strand allele, so I'm going to manually edit ucsc.comb such that "observed" become A/G (from "alleles" field) and mark strand as +
+
+ucsc.comb$strand[ucsc.comb$name=="rs35696625"] <- "-"
+ucsc.comb$observed[ucsc.comb$name=="rs35696625"] <- "A/G"
+
+## check that bp positions also agree (chromEnd is the SNP position)
+sum(ucsc.comb$chromEnd==ucsc.comb$Coordinate.int.des) # 200 - so just the one wierd chr6 that disagrees
+
+## for 4 controls - read in BLAT findings                   
+blat1 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set1BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat1); names(blat1) 
+## [1] 157976     31
+##  [1] "Name"              "Chromosome.des"    "int.id"           
+##  [4] "Sequence.des"      "Coordinate.des"    "Sequence.des.SNP" 
+##  [7] "match"             "mismatch"          "repmatch"         
+## [10] "Ns"                "Q_gap_count"       "Q_gap_bases"      
+## [13] "T_gap_count"       "T_gap_bases"       "strand"           
+## [16] "Q_size"            "Q_start"           "Q_end"            
+## [19] "T_name"            "T_size"            "T_start"          
+## [22] "T_end"             "block_count"       "blocksizes"       
+## [25] "qStarts"           "tStarts"           "score"            
+## [28] "pct.identity"      "id"                "top.hit"          
+## [31] "snp.in.blat.match"
+
+blat2 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set2BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat2); names(blat2) 
+## [1] 859  31
+##  [1] "Name"              "Chromosome.des"    "int.id"           
+##  [4] "Sequence.des"      "Coordinate.des"    "Sequence.des.SNP" 
+##  [7] "match"             "mismatch"          "repmatch"         
+## [10] "Ns"                "Q_gap_count"       "Q_gap_bases"      
+## [13] "T_gap_count"       "T_gap_bases"       "strand"           
+## [16] "Q_size"            "Q_start"           "Q_end"            
+## [19] "T_name"            "T_size"            "T_start"          
+## [22] "T_end"             "block_count"       "blocksizes"       
+## [25] "qStarts"           "tStarts"           "score"            
+## [28] "pct.identity"      "id"                "top.hit"          
+## [31] "snp.in.blat.match"
+
+# get a list of control SNPs
+cntls <-  c("rs10956365", "rs11086066", "rs10000941", "rs10072259")
+ucsc[is.element(ucsc$name, cntls),-1] # last column, "name.match", is NA
+##    X.chrom chromStart  chromEnd       name strand observed alleles chrom
+## 36     chr4  144399781 144399782 rs10000941      +      A/G    A,G,     4
+## 40     chr5   44834790  44834791 rs10072259      +      C/T    C,T,     5
+## 67     chr8  128403886 128403887 rs10956365      +      A/G    A,G,     8
+## 176   chr19   17412365  17412366 rs11086066      -      C/T    C,T,    19
+
+cols <- c("Name","Sequence.des.SNP","strand","Chromosome.des","Coordinate.des")
+blat1[grep(cntls[1],blat1$Name),cols]
+##                             Name Sequence.des.SNP strand Chromosome.des
+## 912 Ambrosome_Broad_seq_rs10956365            [A/G]      +              8
+##     Coordinate.des
+## 912      128403887 # agrees, A/G alleles on + strand
+
+blat1[grep(cntls[2],blat1$Name),cols]
+##                                  Name Sequence.des.SNP strand Chromosome.des
+## 913    Ambrosome_broad_seq_rs11086066            [A/G]      +             19
+## 129456       Ambrosome_seq_rs11086066            [A/G]      +             19
+##        Coordinate.des
+## 913          17412366
+## 129456       17412366  # agrees, A/G alleles on + strand (C/T alleles on - strand)
+
+blat2[grep(cntls[3],blat2$Name),cols] 
+##                  Name Sequence.des.SNP strand Chromosome.des Coordinate.des
+## 2 Ambrosome_rs10000941            [A/G]      +              4      144399782 # agrees, A/G alleles on + strand
+
+blat2[grep(cntls[4],blat2$Name),cols] 
+##                   Name Sequence.des.SNP strand Chromosome.des Coordinate.des
+## 3 Ambrosome_rs10072259            [T/C]      +              5       44834791  # agrees, C/T alleles on + strand
+
+## save UCSC search records for these 201 - from UCSC, save "strand" and observed alleles
+ucsc.save <- ucsc.comb[,c(1:11,29:30)]
+dim(ucsc.save); head(ucsc.save,3) 
+## [1] 201  13
+##                   Name           Name.match Ch Position   SNP Plus.Minus.Strand
+## 1 Ambrosome_rs10134729 Ambrosome_rs10134729 14 37233312 [A/G]               BOT
+## 2 Ambrosome_rs10417631 Ambrosome_rs10417631 19 17123850 [G/C]               BOT
+## 3 Ambrosome_rs10417649 Ambrosome_rs10417649 19 18656035 [A/G]               BOT
+##   ILMN.Strand Customer.Strand exome.std         map int.id strand observed
+## 1         TOP             TOP     FALSE 14.37233312   2398      +      A/G
+## 2         BOT             BOT     FALSE 19.17123850   4500      +      C/G 
+## 3         TOP             BOT     FALSE 19.18656035   4501      +      C/T
+
+## oh right - this won't work for strand ambiguous.
+table(ucsc.save$observed)
+  ## A/C   A/G A/G/T   A/T   C/G C/G/T   C/T   G/T 
+  ##  11    92     2     5     8     1    77     5  ## 13 strand ambiguous we can't use this approach for
+
+ucsc.save$strand.amb <- is.element(ucsc.save$observed,c("C/G","A/T"))
+table(ucsc.save$strand.amb)
+## FALSE  TRUE 
+##   188    13
+
+# look at the triallelics
+ucsc[is.element(ucsc$observed, c("A/G/T","C/G/T")),]
+##     X.chrom chromStart  chromEnd       name strand observed alleles chrom
+## 4      chr1   10509388  10509389 rs12080975      +    C/G/T    C,T,     1
+## 28     chr2  218445337 218445338 rs76222473      +    A/G/T  A,G,T,     2
+## 149   chr13   32757783  32757784  rs7318406      +    A/G/T    A,G,    13
+##               name.match
+## 4   Ambrosome_rs12080975
+## 28  Ambrosome_rs76222473
+## 149  Ambrosome_rs7318406
+
+# update "observed" based on "alleles" (i.e. alleles with frequency info)
+ucsc.save$observed[ucsc.save$Name=="Ambrosome_rs12080975"] <-  "C/T"
+ucsc.save$observed[ucsc.save$Name=="Ambrosome_rs7318406"] <- "A/G"
+
+ucsc.save[ucsc.save$Name=="Ambrosome_rs76222473",]  # array alleles are T/G (same strand as observed of A/G/T)
+ucsc.save$observed[ucsc.save$Name=="Ambrosome_rs76222473"] <- "G/T"
+
+table(ucsc.save$observed) 
+## A/C A/G A/T C/G C/T G/T 
+##  11  93   5   8  78   6
+ 
+## determine if design alleles are same or diff strand as UCSC observed alleles
+# i can do this (for non strand ambiguous SNPs) by knowing the Illumina A B rules. THe "SNP" field for array design has [alleA/alleB]
+
+ucsc.save$observed.IlmnAB <- NA
+ucsc.save$observed.IlmnAB[ucsc.save$observed=="A/C"] <- "[A/C]"
+ucsc.save$observed.IlmnAB[ucsc.save$observed=="A/G"] <- "[A/G]"
+ucsc.save$observed.IlmnAB[ucsc.save$observed=="C/T"] <- "[T/C]"
+ucsc.save$observed.IlmnAB[ucsc.save$observed=="G/T"] <- "[T/G]"
+
+with(ucsc.save, table(observed, observed.IlmnAB, exclude=NULL))
+##         observed.IlmnAB
+## observed [A/C] [A/G] [T/C] [T/G] <NA>
+##     A/C     11     0     0     0    0
+##     A/G      0    93     0     0    0
+##     A/T      0     0     0     0    5 # strand amb, left blank
+##     C/G      0     0     0     0    8 # strand amb, left blank
+##     C/T      0     0    78     0    0
+##     G/T      0     0     0     6    0
+##     <NA>     0     0     0     0    0 
+
+# remove the 13 strand ambiguous
+ucsc.save.all <- ucsc.save
+ucsc.save <- ucsc.save.all[!ucsc.save.all$strand.amb,]
+dim(ucsc.save)  # 188  15
+ 
+## flag where design alleles are on diff strand from UCSC observed alleles
+ucsc.save$allesDiffStrand <- ucsc.save$SNP!=ucsc.save$observed.IlmnAB
+table(ucsc.save$allesDiffStrand) 
+## FALSE  TRUE 
+##    91    97
+
+with(ucsc.save[ucsc.save$allesDiffStrand,], table(SNP, observed.IlmnAB, exclude=NULL))
+##        observed.IlmnAB
+## SNP     [A/C] [A/G] [T/C] [T/G] <NA>
+##   [A/C]     0     0     0     2    0 
+##   [A/G]     0     0    43     0    0
+##   [T/C]     0    45     0     0    0
+##   [T/G]     7     0     0     0    0
+##   <NA>      0     0     0     0    0
+
+## good, alleles are reverse complements
+with(ucsc.save[!ucsc.save$allesDiffStrand,], table(SNP, observed.IlmnAB, exclude=NULL))
+##        observed.IlmnAB
+## SNP     [A/C] [A/G] [T/C] [T/G] <NA>
+##   [A/C]     4     0     0     0    0
+##   [A/G]     0    48     0     0    0
+##   [T/C]     0     0    35     0    0
+##   [T/G]     0     0     0     4    0
+##   <NA>      0     0     0     0    0  # right, these alleles all match
+
+## make a column to indicate +/- orientation of design alleles
+# use Illumina field name - "RefStrand", which indicates +/- strand of design alleles
+strand.opp <- ifelse(ucsc.save$strand=="+","-","+")
+table(strand.opp, ucsc.save$strand)
+## strand.opp   -   +
+##          -   0 176
+##          +  12   0
+ 
+ucsc.save$RefStrand <- ifelse(ucsc.save$allesDiffStrand, strand.opp, ucsc.save$strand)
+
+## check RefStrand assignment
+with(ucsc.save[ucsc.save$allesDiffStrand,], table(strand, RefStrand))
+ ##      RefStrand
+## strand  -  +
+##      -  0  9
+##      + 88  0 # if design alleles are diff from UCSC observed alleles, we want RefStrand to be opp strand from UCSC
+
+with(ucsc.save[!ucsc.save$allesDiffStrand,], table(strand, RefStrand))
+##       RefStrand
+## strand  -  +
+##      -  3  0
+##      +  0 88 # design alleles on same strand as UCSC alleles
+ 
+## save this mapping as text file
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_UCSCTable_RefStrandAnnot.txt", sep="")
+write.table(ucsc.save, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE)
+
+##########
+## BLAT results 1+2 - det. design allele strand wrt BLAT'd sequence 
+##########
+## 2/10/2014
+ 
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+ 
+## read in BLAT results for runs 1 and 2
+## determine whether design alleles are on same or diff strand as BLAT search
+## then, similarly to UCSC search results above, determine whether RefStrand is same or opposite of design alleles
+
+blat1 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set1BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat1); names(blat1)
+
+blat2 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set2BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat2); names(blat2)  
+ 
+allequal(names(blat1), names(blat2)) # TRUE
+ 
+## same columns - row bind 
+blat.all <- rbind(blat1, blat2)y
+
+# read in Ambrosone custom arram to get "SNP" (design alleles) column
+snp.fn <- paste(dir, "ambrosone_CIDR/SNP_Information/SNPs_Table_After_TechnicalFilter.csv",sep="")
+cols <- rep("NULL", times=42)
+cols[1:19] <- NA
+snp <- read.csv(file=snp.fn, colClasses=cols)
+dim(snp); head(snp,4)
+
+table(is.element(blat.all$Name, snp$Name))
+##   TRUE 
+## 158835
+
+159036-158835 # missing 201, which are ones we looked up in UCSC Table Browser
+
+blat.all$SNP <- snp$SNP[match(blat.all$Name, snp$Name)]
+
+# look at correspondence between SNP in Sequence.des and design alleles
+with(blat.all, table(Sequence.des.SNP, SNP))  # oh, indels
+
+table(blat.all$SNP)
+## [A/C] [A/G] [A/T] [C/G] [D/I] [G/C] [I/D] [T/A] [T/C] [T/G] 
+## 14063 60055  1846  2802    17  2667    11  2001 61342 14031
+
+## not sure if I can determine verbose alleles for indels - skip for now.
+
+with(blat.all[!is.element(blat.all$SNP, c("[D/I]","[I/D]")),],
+     table(Sequence.des.SNP, SNP))
+##                 SNP
+## Sequence.des.SNP [A/C] [A/G] [A/T] [C/G] [G/C] [T/A] [T/C] [T/G]
+##            [A/C]  7305     0     0     0     0     0     0  6811
+##            [A/G]     0 31481     0     0     0     0 29289     0
+##            [A/T]     0     0  1846     0     0  2001     0     0
+##            [C/G]     0     0     0  2802  2667     0     0     0
+##            [T/C]     0 28574     0     0     0     0 32053     0
+##            [T/G]  6758     0     0     0     0     0     0  7220  # both following Illumina A/B conventions, so can determine strand agreement for strand ambiguous SNPs as well
+
+## remove indels for now - if we don't do verbose indel mapping, it doesn't matter what RefStrand column holds
+blat.all.inclIndels <- blat.all
+dim(blat.all) # [1] 158835     32
+blat.all <- blat.all.inclIndels[!is.element(blat.all.inclIndels$SNP, c("[D/I]","[I/D]")),]
+dim(blat.all)  # [1] 158807     32
+
+## flag where design alleles are on diff strand from blat strand 
+blat.all$allesDiffStrand <- blat.all$SNP!=blat.all$Sequence.des.SNP
+table(blat.all$allesDiffStrand, exclude=NULL)
+## FALSE  TRUE  <NA> 
+## 82707 76100     0
+
+# check
+with(blat.all[blat.all$allesDiffStrand,], table(SNP, Sequence.des.SNP))
+##        Sequence.des.SNP
+## SNP     [A/C] [A/G] [A/T] [C/G] [T/C] [T/G]
+##   [A/C]     0     0     0     0     0  6758
+##   [A/G]     0     0     0     0 28574     0
+##   [G/C]     0     0     0  2667     0     0
+##   [T/A]     0     0  2001     0     0     0
+##   [T/C]     0 29289     0     0     0     0
+##   [T/G]  6811     0     0     0     0     0
+
+with(blat.all[!blat.all$allesDiffStrand,], table(SNP, Sequence.des.SNP)) 
+##       Sequence.des.SNP
+## SNP     [A/C] [A/G] [A/T] [C/G] [T/C] [T/G]
+##   [A/C]  7305     0     0     0     0     0
+##   [A/G]     0 31481     0     0     0     0
+##   [A/T]     0     0  1846     0     0     0
+##   [C/G]     0     0     0  2802     0     0
+##   [T/C]     0     0     0     0 32053     0
+##   [T/G]     0     0     0     0     0  7220
+
+## make a column to indicate +/- orientation of design alleles
+# use Illumina field name - "RefStrand", which indicates +/- strand of design alleles
+strand.opp <- ifelse(blat.all$strand=="+","-","+")
+table(strand.opp, blat.all$strand)
+## strand.opp      -      +
+##          -      0 155520
+##          +   3287      0
+ 
+blat.all$RefStrand <- ifelse(blat.all$allesDiffStrand, strand.opp, blat.all$strand)
+
+## check RefStrand assignment
+with(blat.all[blat.all$allesDiffStrand,], table(strand, RefStrand))
+##       RefStrand
+## strand     -     +
+##      -     0  1599
+##      + 74501     0 # design alleles diff from BLAT strand
+
+with(blat.all[!blat.all$allesDiffStrand,], table(strand, RefStrand))
+##       RefStrand
+## strand     -     +
+##      -  1688     0
+##      +     0 81019  # design alleles on same strand as BLAT strand
+
+########## Take Ambrosone custom array and add "RefStrand" column, from multiple sources
+ ## blat.all for SNPs with succesful BLAT seraches
+ ## UCSC table results for SNPs w/o succesful BLAT searches
+
+blat.RefStrand <- blat.all[,c("Name","RefStrand")]
+blat.RefStrand$strand.src <- "BLAT"
+
+ucsc <- read.table(file=paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_UCSCTable_RefStrandAnnot.txt", sep=""),
+                   header=TRUE)
+dim(ucsc) # 188 17
+
+ucsc.RefStrand <- ucsc[,c("Name","RefStrand")]
+ucsc.RefStrand$strand.src <- "UCSCTable"
+
+all.RefStrand <- rbind(blat.RefStrand, ucsc.RefStrand)
+
+table(is.element(all.RefStrand$Name, snp$Name))
+##   TRUE 
+## 158995
+
+# reduce Ambrosone SNPs to only 159036 custom ones
+custom <- read.table(gzfile(paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz",sep="")), header=TRUE)
+
+dim(custom) # [1] 159036     24
+
+snp.cstm <- snp[is.element(snp$Name, custom$Name),]
+dim(snp.cstm)
+## [1] 159036     19
+
+## tack on available RefStrand info
+snp.cstm$RefStrand <- all.RefStrand$RefStrand[match(snp.cstm$Name, all.RefStrand$Name)]
+with(snp.cstm, table(RefStrand, exclude=NULL)) 
+## RefStrand
+##     -     +  <NA> 
+## 76280 82715    41
+ 
+## try leaving RefStrand as NA for (1) strand ambiguous SNPs w/o succesful BLAT searches, n=13; and (2) indels, n=28
+13+28 # 41 NA RefStrand
+
+##########
+## Custom exome: make allele mappings  
+##########
+
+# ready to run make.allele.mappings function on snp.cstm data frame above
+# need to adjust some column names first
+names(snp.cstm) 
+##  [1] "Index"                "Aux"                  "Intensity.Only"      
+##  [4] "Manually.reviewed."   "Comment"              "Name"                
+##  [7] "Ch"                   "Position"             "Call.Freq"           
+## [10] "Rep.Errors"           "P.C.Errors"           "P.P.C.Errors"        
+## [13] "X10..GC"              "X50..GC"              "SNP"                 
+## [16] "Plus.Minus.Strand"    "ILMN.Strand"          "Customer.Strand"     
+## [19] "Top.Genomic.Sequence" "RefStrand"
+
+names(snp.cstm)[17] # [1] "ILMN.Strand"
+names(snp.cstm)[17] <-  "IlmnStrand"
+
+## missing SourceSeq and SourceStrand fields, as well as IlmnID - so going to run through manual, pared down version of make allele mappings
+
+snp.dat <- snp.cstm
+cat("\tTotal number of probes:", length(snp.dat$Name), "\n") # 159036
+cat("\tTotal number of indels:", length(snp.dat$Name[is.element(snp.dat$SNP, 
+        c("[D/I]", "[I/D]"))]), "\n") # 28
+
+map <- as.data.frame(c(snp.dat$Name, snp.dat$Name))
+names(map) <- "snp"
+snp.dat$order <- 1:length(snp.dat$Name)
+map$order <- snp.dat$order[match(map$snp, snp.dat$Name)]
+map <- map[order(map$order), ]
+map$alle.AB[!duplicated(map$snp)] <- "A"
+map$alle.AB[duplicated(map$snp)] <- "B"
+snp.dat$design.A <- substr(snp.dat$SNP, 2, 2)
+snp.dat$design.B <- substr(snp.dat$SNP, 4, 4)
+snp.dat$design.A[snp.dat$SNP == "[N/A]"] <- NA
+snp.dat$design.B[snp.dat$SNP == "[N/A]"] <- NA
+indels.dat <- snp.dat[is.element(snp.dat$design.A, c("I", 
+    "D")), ] 
+
+### indels
+dim(indels.dat)
+indels <- indels.dat$Name
+# non-verbose indel maps
+del.first <- indels.dat[indels.dat$SNP == "[D/I]", ]
+ins.first <- indels.dat[indels.dat$SNP == "[I/D]",]
+del.first$top.A <- del.first$design.A <- "D"
+del.first$top.B <- del.first$design.B <- "I"
+ins.first$top.A <- ins.first$design.A <- "I"
+ins.first$top.B <- ins.first$design.B <- "D"
+indels.dat <- rbind(del.first, ins.first)
+indels.dat$alle1.revcomp <- indels.dat$design.A
+indels.dat$alle2.revcomp <- indels.dat$design.B 
+
+
+### SNPs with BLAT and/or UCSC table info 
+snp.dat <- snp.dat[!is.element(snp.dat$Name, indels) & !is.na(snp.dat$RefStrand), ]
+dim(snp.dat) # 158995 23
+
+lup <- as.data.frame(c("A", "C", "G", "T"))
+names(lup) <- "b1"
+lup$b2 <- c("T", "G", "C", "A")
+snp.dat$alle1.revcomp <- lup$b2[match(snp.dat$design.A, lup$b1)]
+snp.dat$alle2.revcomp <- lup$b2[match(snp.dat$design.B, lup$b1)]
+cat("\tDefining TOP alleles\n")
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.A[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.B[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle1.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle2.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] 
+
+cols.keep <- c("Name","SNP","design.A", 
+        "design.B", "alle1.revcomp", "alle2.revcomp", "top.A", 
+        "top.B", "order","RefStrand")
+
+comb <- rbind(snp.dat[, cols.keep], indels.dat[, cols.keep])
+dim(comb)
+# [1] 159023     10
+head(comb)
+##                          Name   SNP design.A design.B alle1.revcomp
+## 246520 Ambrosome_10_123219423 [T/G]        T        G             A
+## 246521 Ambrosome_10_123219462 [T/G]        T        G             A
+## 246522 Ambrosome_10_123219543 [A/G]        A        G             T
+## 246523 Ambrosome_10_123220554 [A/C]        A        C             T
+## 246524 Ambrosome_10_123220556 [A/G]        A        G             T
+## 246525 Ambrosome_10_123220581 [T/C]        T        C             A
+##        alle2.revcomp top.A top.B order RefStrand
+## 246520             C     A     C     1         +
+## 246521             C     A     C     2         +
+## 246522             C     A     G     3         -
+## 246523             G     A     C     4         +
+## 246524             C     A     G     5         +
+## 246525             G     A     G     6         +
+
+## normally the function would define dbSNP FORWARD here - skip to (+) strand 
+snp.dat$plus.A[is.element(snp.dat$RefStrand, "+")] <- snp.dat$design.A[is.element(snp.dat$RefStrand, "+")]
+snp.dat$plus.B[is.element(snp.dat$RefStrand, "+")] <- snp.dat$design.B[is.element(snp.dat$RefStrand, "+")]
+snp.dat$plus.A[is.element(snp.dat$RefStrand, "-")] <- snp.dat$alle1.revcomp[is.element(snp.dat$RefStrand, "-")]
+snp.dat$plus.B[is.element(snp.dat$RefStrand, "-")] <- snp.dat$alle2.revcomp[is.element(snp.dat$RefStrand, "-")]
+
+## populate map (df with 2 rows per SNP)
+map$alle.design[map$alle.AB == "A"] <- snp.dat$design.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.design[map$alle.AB == "B"] <- snp.dat$design.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+ 
+map$alle.top[map$alle.AB == "A"] <- snp.dat$top.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.top[map$alle.AB == "B"] <- snp.dat$top.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+
+map$alle.plus[map$alle.AB == "A"] <- snp.dat$plus.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.plus[map$alle.AB == "B"] <- snp.dat$plus.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+dim(map); head(map)
+## [1] 318072      6
+##                           snp order alle.AB alle.design alle.top alle.plus
+## 1      Ambrosome_10_123219423     1       A           T        A         T
+## 159037 Ambrosome_10_123219423     1       B           G        C         G
+## 2      Ambrosome_10_123219462     2       A           T        A         T
+## 159038 Ambrosome_10_123219462     2       B           G        C         G
+## 3      Ambrosome_10_123219543     3       A           A        A         T
+## 159039 Ambrosome_10_123219543     3       B           G        G         C
+
+na.snps <- snp.dat$Name[is.element(snp.dat$SNP, c("[N/A]", "NA"))]
+length(na.snps)  # 0 SNPs with NA alleles
+
+map.final <- map[order(map$order), -2]
+
+################## 
+### strand ambiguous SNPs - fill in TOP and design alleles - plus alleles will be NA
+amb.dat <- snp.cstm[!is.element(snp.cstm$Name, indels) & is.na(snp.cstm$RefStrand),]
+snp.dat <- amb.dat
+map <- as.data.frame(c(snp.dat$Name, snp.dat$Name))
+ 
+names(map) <- "snp"
+snp.dat$order <- 1:length(snp.dat$Name)
+map$order <- snp.dat$order[match(map$snp, snp.dat$Name)]
+map <- map[order(map$order), ]
+map$alle.AB[!duplicated(map$snp)] <- "A"
+map$alle.AB[duplicated(map$snp)] <- "B"
+snp.dat$design.A <- substr(snp.dat$SNP, 2, 2)
+snp.dat$design.B <- substr(snp.dat$SNP, 4, 4)
+snp.dat$design.A[snp.dat$SNP == "[N/A]"] <- NA
+snp.dat$design.B[snp.dat$SNP == "[N/A]"] <- NA
+
+snp.dat$alle1.revcomp <- lup$b2[match(snp.dat$design.A, lup$b1)]
+snp.dat$alle2.revcomp <- lup$b2[match(snp.dat$design.B, lup$b1)]
+cat("\tDefining TOP alleles\n")
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.A[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.B[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle1.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle2.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] 
+
+## populate map (df with 2 rows per SNP)
+map$alle.design[map$alle.AB == "A"] <- snp.dat$design.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.design[map$alle.AB == "B"] <- snp.dat$design.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+ 
+map$alle.top[map$alle.AB == "A"] <- snp.dat$top.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.top[map$alle.AB == "B"] <- snp.dat$top.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+map$alle.plus <- NA
+
+dim(map); head(map)
+## [1] 26  6
+##                     snp order alle.AB alle.design alle.top alle.plus
+## 1  Ambrosome_rs10417631     1       A           G        C        NA
+## 14 Ambrosome_rs10417631     1       B           C        G        NA
+## 2    Ambrosome_rs250112     2       A           G        C        NA
+## 15   Ambrosome_rs250112     2       B           C        G        NA
+## 3  Ambrosome_rs34546472     3       A           G        C        NA
+## 16 Ambrosome_rs34546472     3       B           C        G        NA
+
+### SAVE THIS COMBINED MAPPING FILE - RETURN FOR SPOT CHECKS
+map.comb <- rbind(map.final, map[,-2])
+dim(map.comb) # 318090 5
+length(unique(map.comb$snp)) # 159036
+
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_alleleMappings.csv", sep="")
+write.csv(map.comb, file=fn.out, quote=FALSE, row.names=FALSE) 
+
+##########
+## Standard exome: make allele mappings, non-verbose indels
+##########
+## 2/11/2014
+ 
+## redo of 2/4 step, "Standard exome: make allele mappings" - can't do verbose indel mapping for custom variants, so need to redo this alelle mappings settting indels.verbose=FALSE
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# exome+custom annotation - cols after 19 don't look useful right now
+snp.fn <- paste(dir, "ambrosone_CIDR/SNP_Information/SNPs_Table_After_TechnicalFilter.csv",sep="")
+cols <- rep("NULL", times=42)
+cols[1:19] <- NA
+snp <- read.csv(file=snp.fn, colClasses=cols)
+nrow(snp) # 405555
+ 
+# exome array annotation
+exm.fn <- "/projects/geneva/gcc-fs2/SNP_annotation/Illumina/HumanExome-12v1_A/HumanExome-12v1_A.csv"
+exm <- read.csv(file=exm.fn, skip=7,nrow=247870, header=TRUE)
+nrow(exm) # 247870
+
+# simplify exome array annotation
+flds <- c("IlmnID","Name","IlmnStrand","SNP","SourceSeq","SourceStrand","RefStrand", "Chr","MapInfo")
+idx <- match(flds,names(exm))
+names(exm)[idx]
+## [1] "IlmnID"       "Name"         "IlmnStrand"   "SNP"          "SourceSeq"   
+## [6] "SourceStrand" "RefStrand"    "Chr"          "MapInfo"
+
+exm.mini <- unique(exm[,idx])
+nrow(exm.mini) # [1] 247870
+
+# simplify exome+custom annotation 
+snp.mini <- snp[,c(6:8,15:18)]
+head(snp.mini)
+
+# add a flag to indicate presence on (standard, non custom) exome array
+snp.mini$exome.std <- is.element(snp.mini$Name, exm.mini$Name)
+## table(snp.mini$exome.std)
+##  FALSE   TRUE 
+## 159036 246519
+
+# merge dfs together
+# first rename all exome array columns with suffix ".std" (for standard array)
+new.names <-  paste(names(exm.mini), "std",sep=".")
+names(exm.mini) <- new.names
+
+# keep custom SNP rows in  - will have NA values for exome array columns
+comb <- merge(snp.mini, exm.mini, by.x="Name",by.y="Name.std",
+              all.x=TRUE, all.y=FALSE, sort=FALSE)
+
+# make a version that is just the overlapping SNP set
+comb.std <- comb[comb$exome.std,]; dim(comb.std)  # [1] 246519     16
+
+# remove unnecessary columns
+comb.std.mini <- comb.std[,c(1,9:16)]
+names(comb.std.mini)
+ 
+# strip off 'std' from Illumina array manifest fields so that the function will recognize them
+new.names <- sub(".std","", names(comb.std.mini))
+names(comb.std.mini) <- new.names
+
+# re-run make.allele.mappings function
+library(QCpipeline)
+
+map.std <- make.allele.mappings(comb.std.mini,indels.verbose=FALSE)
+	## Total number of probes: 246519 
+	## Total number of indels: 139 
+	## Creating mappings for insertion/deletion probes
+	## Defining TOP alleles
+	## Defining FORWARD alleles
+	## Defining PLUS(+) alleles
+	## Total number for probes with NA alleles (probably CNVs):  0 
+	## Mapping file created; do some spot checking against original annotation to confirm mappings!
+
+dim(map.std); head(map.std) 
+## [1] 493038      6
+##                       snp alle.AB alle.design alle.top alle.fwd alle.plus
+## 1      exm-IND1-200449980       A           D        D        D         D
+## 246520 exm-IND1-200449980       B           I        I        I         I
+## 2      exm-IND1-201453487       A           D        D        D         D
+## 246521 exm-IND1-201453487       B           I        I        I         I
+## 3       exm-IND1-85310248       A           I        I        I         I
+## 246522  exm-IND1-85310248       B           D        D        D         D
+ 
+## read in original set and make sure 2 dataframes match (at non-indels)
+fn <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_stdExomeVariants_alleleMappings.csv", sep="") 
+map.orig <- read.csv(file=fn)
+dim(map.orig); head(map.orig)
+## [1] 493038      6
+##                  snp alle.AB alle.design alle.top alle.fwd alle.plus
+## 1 exm-IND1-200449980       A           -        -        -         -
+## 2 exm-IND1-200449980       B           C        G        G         G
+## 3 exm-IND1-201453487       A           -        -        -         -
+## 4 exm-IND1-201453487       B        GAGT     ACTC     ACTC      ACTC
+## 5  exm-IND1-85310248       A           A        A        A         A
+## 6  exm-IND1-85310248       B           -        -        -         -
+
+# collect name of indels
+table(comb.std.mini$SNP)
+## [A/C] [A/G] [A/T] [C/G] [D/I] [G/C] [I/D] [T/A] [T/C] [T/G] 
+## 17450 88801  4583 11380    71  9522    68  4242 93246 17156
+
+indels <- comb.std.mini$Name[is.element(comb.std.mini$SNP,c("[I/D]","[D/I]"))]
+length(indels)  # 139
+head(indels) 
+## [1] "exm-IND1-200449980"  "exm-IND1-201453487"  "exm-IND1-85310248"  
+## [4] "exm-IND10-102817747" "exm-IND10-18329639"  "exm-IND10-27476467"
+
+allequal(map.std$snp, map.orig$snp) # TRUE, df in same order
+
+# compare dfs at non-indels (i.e. make sure redo of mappings is the same as original version)
+allequal(map.std[!is.element(map.std$snp, indels),],
+         map.orig[!is.element(map.orig$snp, indels),]) # TRUE - mappings are the same
+
+## # if needed to determine which columns are different
+## for (c in names(map.std)){
+##   a <- map.std[!is.element(map.std$snp, indels),c]
+##   b <- map.orig[!is.element(map.std$snp, indels),c]
+
+##   cat("Mismatches for",c,"\n")
+##   print(sum(a!=b))
+## }
+## diff <- map.std$alle.design!=map.orig$alle.design; sum(diff)
+## head(map.std[diff,])
+## head(map.orig[diff,])
+ 
+# write over initial file
+write.csv(map.std, file=fn, quote=FALSE, row.names=FALSE)
+ 
+
+##########
+## Custom exome: spot check allele mappings 
+########## 
+## 2/11/2014
+
+## sanity check on sets of allele mappings from custom array (which was a marathon effort yesterday)
+
+## read in mappings
+fn <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_alleleMappings.csv", sep="")
+map.cstm <- read.csv(file=fn)
+dim(map.cstm); head(map.cstm)
+## [1] 318098      5
+##                      snp alle.AB alle.design alle.top alle.plus
+## 1 Ambrosome_10_123219423       A           T        A         T
+## 2 Ambrosome_10_123219423       B           G        C         G
+## 3 Ambrosome_10_123219462       A           T        A         T
+## 4 Ambrosome_10_123219462       B           G        C         G
+## 5 Ambrosome_10_123219543       A           A        A         T
+## 6 Ambrosome_10_123219543       B           G        G         C
+
+length(unique(map.cstm$snp)) # 159036
+ 
+## 'snp' is data frame of Ambrosone manifest
+## read in design manifest - version that I merged with Ambrosone manifest
+fn <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz", sep="")
+cstm <- read.table(gzfile(fn), header=TRUE)
+dim(cstm); names(cstm)
+## [1] 159036     24
+##  [1] "Name.match"               "Name"                    
+##  [3] "Ch"                       "Position"                
+##  [5] "SNP"                      "Plus.Minus.Strand"       
+##  [7] "ILMN.Strand"              "Customer.Strand"         
+##  [9] "exome.std"                "map"                     
+## [11] "int.id"                   "Locus_Name.des"          
+## [13] "Sequence.des"             "Genome_Build_Version.des"
+## [15] "Chromosome.des"           "Coordinate.des"          
+## [17] "Source.des"               "Sequence_Orientation.des"
+## [19] "Ilmn_Id.des"              "Bead_Types.Assay.des"    
+## [21] "Assay_Type.des"           "Coordinate.int.des"      
+## [23] "map.des"                  "Sequence.des.SNP"
+
+table(is.element(unique(map.cstm$snp),
+                 cstm$Name)) # T for 159036
+ 
+## randomly select some variants to spot check
+sel <- sample(unique(map.cstm$snp), 10)
+sel[1] # "Ambrosome_rs901772"
+
+map.cstm[map.cstm$snp==sel[1],] 
+##                      snp alle.AB alle.design alle.top alle.plus
+## 246015 Ambrosome_rs901772       A           T        A         T
+## 246016 Ambrosome_rs901772       B           C        G         C
+
+cstm[cstm$Name==sel[1],] 
+##                Name.match               Name Ch  Position   SNP
+## 123008 Ambrosome_rs901772 Ambrosome_rs901772  8 144517562 [T/C]
+##        Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 123008               BOT         BOT             BOT     FALSE 8.144517562
+##        int.id Locus_Name.des
+## 123008 123008       rs901772
+##                                                                                                                         Sequence.des
+## 123008 ACAACCAAAAAACAAGCCCAGGGCCTCCTGAGAGTCCCTCCTCAGCCTGTCGCTGCTCTG[T/C]CCAGGGCCTCCTGAGAGTCCCTCCTCAGCCTGTCGCTGCTCCGCCCCTTCCTTGTGCCCC
+##        Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 123008                     37.1              8      144517562      dbsnp
+##        Sequence_Orientation.des                 Ilmn_Id.des
+## 123008                  FORWARD rs901772-131_B_F_2111247455
+##        Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 123008                    1     InfiniumII          144517562 8.144517562
+##        Sequence.des.SNP
+## 123008            [T/C]
+
+ ## redoing BLAT in UCSC web server to check plus alleles
+
+# 1 is correct - T/C are plus strand alleles
+
+map.cstm[map.cstm$snp==sel[2],]
+##                        snp alle.AB alle.design alle.top alle.plus
+## 228125 Ambrosome_rs78532943       A           T        A         A
+## 228126 Ambrosome_rs78532943       B           C        G         G
+ 
+cstm[cstm$Name==sel[2],]  
+##                  Name.match                 Name Ch Position   SNP
+## 114063 Ambrosome_rs78532943 Ambrosome_rs78532943  5 58484356 [T/C]
+##        Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std        map
+## 114063               BOT         BOT             TOP     FALSE 5.58484356
+##        int.id Locus_Name.des
+## 114063 114063     rs78532943
+##                                                                                                                         Sequence.des
+## 114063 TTTATTAAACAATAAGAATCACTGAAAATAGCAGGAAAATACGGTTATCATTTAACACTT[A/G]AACAGCTGAACATCATAGCCTAAAAAAAAAGAGGAAAATAAATGGTTTCGAGGATTGTTT
+##        Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 114063                     37.1              5       58484356      dbsnp
+##        Sequence_Orientation.des                   Ilmn_Id.des
+## 114063                  FORWARD rs78532943-131_B_R_2091199901
+##        Bead_Types.Assay.des Assay_Type.des Coordinate.int.des    map.des
+## 114063                    1     InfiniumII           58484356 5.58484356
+##        Sequence.des.SNP
+## 114063            [A/G]
+
+# 2 is ocrrect - A is plus strand allele
+
+map.cstm[map.cstm$snp==sel[5],]
+##                             snp alle.AB alle.design alle.top alle.plus
+## 265331 Ambrosome_seq_rs113496585       A           T        A         T
+## 265332 Ambrosome_seq_rs113496585       B           C        G         C
+ 
+cstm[cstm$Name==sel[5],]
+##                      Name.match                      Name Ch  Position   SNP
+## 132666 Ambrosome_seq_rs113496585 Ambrosome_seq_rs113496585 11 129275852 [T/C]
+##        Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std          map
+## 132666               BOT         BOT             BOT     FALSE 11.129275852
+##        int.id  Locus_Name.des
+## 132666 132666 seq_rs113496585
+##                                                                                                                         Sequence.des
+## 132666 TCCAGGCAGAAGTATTTGCTCTTGCTGCTGATTTCTAGAATGCTTATATTCTTTAGTCCA[T/C]ATTTAAGTGATTGTCTTGCTTTATAGGTACCTATGTATGTTACTTATCTATCTCATTACT
+##        Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 132666                       37             11      129275852      dbSNP
+##        Sequence_Orientation.des                        Ilmn_Id.des
+## 132666                  FORWARD seq_rs113496585-128_B_F_2127964457
+##        Bead_Types.Assay.des Assay_Type.des Coordinate.int.des      map.des
+## 132666                    1     InfiniumII          129275852 11.129275852
+##        Sequence.des.SNP
+## 132666            [T/C] 
+ 
+## check one more
+map.cstm[map.cstm$snp==sel[8],] 
+##                       snp alle.AB alle.design alle.top alle.plus
+## 15297 Ambrosome_rs10843115       A           T        A         T
+## 15298 Ambrosome_rs10843115       B           C        G         C
+ 
+cstm[cstm$Name==sel[8],]  
+##                Name.match                 Name Ch Position   SNP
+## 7649 Ambrosome_rs10843115 Ambrosome_rs10843115 12 28307717 [T/C]
+##      Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map int.id
+## 7649               BOT         BOT             BOT     FALSE 12.28307717   7649
+##      Locus_Name.des
+## 7649     rs10843115
+##                                                                                                                       Sequence.des
+## 7649 TCATGAAGAGCCCACAAAGTGCATTATTTTTTCCCTAGTATCTTCAATACTATTTGAGTA[T/C]ATTAAATATATAGAAATGCTTATAGTATGTTAGCATTTTTTGGTTGTATTTGTTGAAGTG
+##      Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 7649                     37.1             12       28307717      dbsnp
+##      Sequence_Orientation.des                   Ilmn_Id.des
+## 7649                  FORWARD rs10843115-131_B_F_2091073938
+##      Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 7649                    1     InfiniumII           28307717 12.28307717
+##      Sequence.des.SNP
+## 7649            [T/C]
+ 
+## sanity check on TOP allele A and B
+table(cstm$ILMN.Strand)
+##   BOT MINUS  PLUS   TOP 
+## 80137    19     9 78871
+
+## if design alleles are BOT strand, allele A should be T (unless strand amb)
+with(cstm[cstm$ILMN.Strand=="BOT",], table(SNP)) 
+## SNP
+## [G/C] [T/A] [T/C] [T/G] 
+##  2671  2002 61422 14042
+
+## if design alleles are TOP strand, allele A should be A (unless strand amb)
+with(cstm[cstm$ILMN.Strand=="TOP",], table(SNP)) 
+## SNP
+## [A/C] [A/G] [A/T] [C/G] 
+## 14069 60146  1850  2806
+
+table(map.cstm$alle.top[map.cstm$alle.AB=="A"])
+##      A      C 
+## 153531   5477
+
+table(map.cstm$alle.top[map.cstm$alle.AB=="B"]) 
+ ##     C      G      T 
+ ## 28111 127045   3852
+
+### ok, TOP mapping look consistent with Illumina rules
+ 
+## check that only "NA's" are for plus strand alleles we couldn't BLAT
+sum(is.na(map.cstm$alle.plus)) # 108
+108/2 ## 54 variants
+
+head(map.cstm[is.na(map.cstm$alle.plus),],) ## hmm, NA across the board. need to investigate that
+##                        snp alle.AB alle.design alle.top alle.plus
+## 8999  Ambrosome_rs10417631       A        <NA>     <NA>      <NA>
+## 9000  Ambrosome_rs10417631       B        <NA>     <NA>      <NA>
+## 11863 Ambrosome_rs10696746       A        <NA>     <NA>      <NA>
+## 11864 Ambrosome_rs10696746       B        <NA>     <NA>      <NA>
+## 25215 Ambrosome_rs11290822       A        <NA>     <NA>      <NA>
+## 25216 Ambrosome_rs11290822       B        <NA>     <NA>      <NA> 
+
+ 
+na.snps <- unique(map.cstm$snp[is.na(map.cstm$alle.plus)]); length(na.snps) # [1] 41
+## weird, must be some duplicated names
+na2.snps <-map.cstm$snp[is.na(map.cstm$alle.plus) & map.cstm$alle.AB=="A"] 
+sum(duplicated(na2.snps))  # 13 duplicated
+
+map.cstm[is.element(map.cstm$snp,
+                    na2.snps[duplicated(na2.snps)]),]
+## ok, these are the 13 strand ambiguous SNPs where I couldn't determine plus mapping from UCSC Table Browser.
+## they appear once with NA for design, top, and plus alleles and once with NA for only plus alleles
+## for these 13, remove the record that has NA for all 3 allele types
+
+na.dup.rows <- map.cstm[is.element(map.cstm$snp,na2.snps[duplicated(na2.snps)])
+                        & is.na(map.cstm$alle.top),]
+na.dup.rows
+##                             snp alle.AB alle.design alle.top alle.plus
+## 8999        Ambrosome_rs10417631       A        <NA>     <NA>      <NA>
+## 9000        Ambrosome_rs10417631       B        <NA>     <NA>      <NA>
+## 90187         Ambrosome_rs250112       A        <NA>     <NA>      <NA>
+## 90188         Ambrosome_rs250112       B        <NA>     <NA>      <NA>
+## 107643      Ambrosome_rs34546472       A        <NA>     <NA>      <NA>
+## 107644      Ambrosome_rs34546472       B        <NA>     <NA>      <NA>
+## 121993       Ambrosome_rs4356791       A        <NA>     <NA>      <NA>
+## 121994       Ambrosome_rs4356791       B        <NA>     <NA>      <NA>
+## 124293      Ambrosome_rs45502304       A        <NA>     <NA>      <NA>
+## 124294      Ambrosome_rs45502304       B        <NA>     <NA>      <NA>
+## 128709       Ambrosome_rs4764579       A        <NA>     <NA>      <NA>
+## 128710       Ambrosome_rs4764579       B        <NA>     <NA>      <NA>
+## 146629        Ambrosome_rs592546       A        <NA>     <NA>      <NA>
+## 146630        Ambrosome_rs592546       B        <NA>     <NA>      <NA>
+## 151791      Ambrosome_rs60691650       A        <NA>     <NA>      <NA>
+## 151792      Ambrosome_rs60691650       B        <NA>     <NA>      <NA>
+## 182359       Ambrosome_rs7262177       A        <NA>     <NA>      <NA>
+## 182360       Ambrosome_rs7262177       B        <NA>     <NA>      <NA>
+## 243017       Ambrosome_rs8107793       A        <NA>     <NA>      <NA>
+## 243018       Ambrosome_rs8107793       B        <NA>     <NA>      <NA>
+## 249281       Ambrosome_rs9348345       A        <NA>     <NA>      <NA>
+## 249282       Ambrosome_rs9348345       B        <NA>     <NA>      <NA>
+## 256317       Ambrosome_rs9851793       A        <NA>     <NA>      <NA>
+## 256318       Ambrosome_rs9851793       B        <NA>     <NA>      <NA>
+## 293407 Ambrosome_seq_rs143563394       A        <NA>     <NA>      <NA>
+## 293408 Ambrosome_seq_rs143563394       B        <NA>     <NA>      <NA>
+
+table(is.element(na.dup.rows$snp, map.cstm$snp[!is.na(map.cstm$alle.design)]))
+ ## T for 26 records - we have non-NA records
+
+nrow(map.cstm)/2  # 159049 -- 13 extra rows
+nrow(cstm)  # 159036
+
+map.cstm.save <- map.cstm
+map.cstm <- map.cstm[!is.element(row.names(map.cstm),
+                                 row.names(na.dup.rows)),]
+nrow(map.cstm)/2  # 159036
+
+## look at the mappings that are still NA
+sum(is.na(map.cstm$alle.design)) # 56
+56/2 ## 28 variants
+
+## 28 is the number of indels where I couldn't determine verbose alleles - are these the ones with all NAs?
+map.cstm[is.na(map.cstm$alle.design),]
+na.snps <- unique(map.cstm$snp[is.na(map.cstm$alle.design)]); length(na.snps) # 28
+ 
+indels <- cstm$Name[is.element(cstm$SNP, c("[D/I]","[I/D]"))]; length(indels) # 28
+table(is.element(indels, na.snps)) # T for 28
+
+## looking back over code for making allele mappings for custom SNPs - did I not do the indels?
+## fill them in now
+map.cstm[is.element(map.cstm$snp, indels),]
+map.indels <- map.cstm[is.element(map.cstm$snp, indels),]
+
+snp.dat <- cstm
+snp.dat$design.A <- substr(snp.dat$SNP, 2, 2)
+snp.dat$design.B <- substr(snp.dat$SNP, 4, 4)
+snp.dat$design.A[snp.dat$SNP == "[N/A]"] <- NA
+snp.dat$design.B[snp.dat$SNP == "[N/A]"] <- NA
+indels.dat <- snp.dat[is.element(snp.dat$design.A, c("I","D")), ] 
+# non-verbose indel maps
+del.first <- indels.dat[indels.dat$SNP == "[D/I]", ]
+ins.first <- indels.dat[indels.dat$SNP == "[I/D]",]
+del.first$top.A <- del.first$design.A <- "D"
+del.first$top.B <- del.first$design.B <- "I"
+ins.first$top.A <- ins.first$design.A <- "I"
+ins.first$top.B <- ins.first$design.B <- "D"
+indels.dat <- rbind(del.first, ins.first)
+indels.dat$alle1.revcomp <- indels.dat$design.A
+indels.dat$alle2.revcomp <- indels.dat$design.B
+
+snp.dat <- indels.dat
+map <- map.indels
+## populate map (df with 2 rows per SNP)
+map$alle.design[map$alle.AB == "A"] <- snp.dat$design.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.design[map$alle.AB == "B"] <- snp.dat$design.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+ 
+map$alle.top[map$alle.AB == "A"] <- snp.dat$top.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.top[map$alle.AB == "B"] <- snp.dat$top.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+map # 28 indels with design and top alleles filled in ("D" and "I") - alle.plus is NA
+ 
+## tack indels back onto rest of custom SNPs
+map.cstm <- rbind(map.cstm[!is.element(map.cstm$snp, indels),], # non indels
+                  map) # newly re-mapped indels
+
+nrow(map.cstm)/2 # 159036
+
+sum(is.na(map.cstm$alle.plus))/2 # 41 NA alleplus: 13 strand amb SNPs from UCSC Table browser, 28 indels
+sum(is.na(map.cstm$alle.design)) # 0
+sum(is.na(map.cstm$alle.top)) # 0
+  
+## re-write custom SNP allele mappings .csv file 
+fn.out <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_alleleMappings.csv", sep="")
+write.csv(map.cstm, file=fn.out, quote=FALSE, row.names=FALSE)  
+
+## do a few more spot checks
+sel <- sample(unique(map.cstm$snp), 3) 
+sel # [1] "Ambrosome_rs56361289" "Ambrosome_rs11882861" "Ambrosome_rs6492246"
+ 
+map.cstm[map.cstm$snp==sel[1],]
+##                       snp alle.AB alle.design alle.top alle.plus
+## 140003 Ambrosome_rs56361289       A           A        A         T
+## 140004 Ambrosome_rs56361289       B           G        G         C
+ 
+cstm[cstm$Name==sel[1],]
+##                 Name.match                 Name Ch Position   SNP
+## 70002 Ambrosome_rs56361289 Ambrosome_rs56361289 10 68558659 [A/G]
+##       Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 70002               BOT         TOP             BOT     FALSE 10.68558659
+##       int.id Locus_Name.des
+## 70002  70002     rs56361289
+##                                                                                                                        Sequence.des
+## 70002 AAAAACCTGCTAGACAACTACAATTTTTCTATAAACCTTATGCATCAATCTGTCATCATC[T/C]ATAGAACTGAAGGGTGATTCGGCCAGCATACAAGTAAAGAGAGTATAATTCAAAGTAATA
+##       Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 70002                     37.1             10       68558659      dbsnp
+##       Sequence_Orientation.des                   Ilmn_Id.des
+## 70002                  FORWARD rs56361289-131_T_R_2105333803
+##       Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 70002                    1     InfiniumII           68558659 10.68558659
+##       Sequence.des.SNP
+## 70002            [T/C]
+
+# verified that Sequence.des is + strand on chr 10, so T/C are indeed plus alleles
+ 
+## look at a strand ambiguous SNP
+sample(cstm$Name[cstm$SNP=="[A/T]"],1) # [1] "Ambrosome_rs4864923"
+
+map.cstm[map.cstm$snp=="Ambrosome_rs4864923",]  # good, looks like one we were able to BLAT
+##                       snp alle.AB alle.design alle.top alle.plus
+## 131581 Ambrosome_rs4864923       A           A        A         A
+## 131582 Ambrosome_rs4864923       B           T        T         T
+ 
+cstm[cstm$Name=="Ambrosome_rs4864923",] 
+##                Name.match                Name Ch Position   SNP
+## 65791 Ambrosome_rs4864923 Ambrosome_rs4864923  4 55613634 [A/T]
+##       Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std        map int.id
+## 65791               BOT         TOP             TOP     FALSE 4.55613634  65791
+##       Locus_Name.des
+## 65791      rs4864923
+##                                                                                                                        Sequence.des
+## 65791 ACAGGCACCCAGAGCACATGTTGGTGGCAATTGAACTGTCTTTGACATGCATGATATCTA[A/T]GGATGACAGGGAAAGTTGAAGACAATGGTACAGTGTAAGGcagcagtccccaaacatttt
+##       Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 65791                     37.1              4       55613634      dbsnp
+##       Sequence_Orientation.des                  Ilmn_Id.des
+## 65791                  FORWARD rs4864923-131_T_F_1893188462
+##       Bead_Types.Assay.des Assay_Type.des Coordinate.int.des    map.des
+## 65791                    2      InfiniumI           55613634 4.55613634
+##       Sequence.des.SNP
+## 65791            [A/T] 
+
+# verified that Sequence.des if + strand on chr4, so plus alleles are A/T
+ 
+## look at SNP from blat 1, blat 2, and UCSC table browser steps
+b1 <- "Ambrosome_10_123219423"
+b2 <- "Ambrosome_seq_rs193139400"
+uc <- "Ambrosome_rs10920298"
+
+map.cstm[map.cstm$snp==b1,]
+ ##                     snp alle.AB alle.design alle.top alle.plus
+## 1 Ambrosome_10_123219423       A           T        A         T
+## 2 Ambrosome_10_123219423       B           G        C         G
+ 
+cstm[cstm$Name==b1,]
+##               Name.match                   Name Ch  Position   SNP
+## 1 Ambrosome_10_123219423 Ambrosome_10_123219423 10 123219423 [T/G]
+##   Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std          map int.id
+## 1               BOT         BOT             BOT     FALSE 10.123219423      1
+##   Locus_Name.des
+## 1   10_123219423
+##                                                                                                                    Sequence.des
+## 1 CAAGAAGGAGTCATTTGCCAAAGTGAAATAGCACATAAACCTTAGAACCCACAGATTTGA[T/G]TGAATTCTAATCTTGGCCAAAACTGGCAGGAGTGAGGGGGTGTTGGGGAGGGAGGATGAG
+##   Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 1                       37             10      123219423      dbSNP
+##   Sequence_Orientation.des                     Ilmn_Id.des Bead_Types.Assay.des
+## 1                  FORWARD 10_123219423-128_B_F_2127976125                    1
+##   Assay_Type.des Coordinate.int.des      map.des Sequence.des.SNP
+## 1     InfiniumII          123219423 10.123219423            [T/G]
+
+# sequence.des if + strand on chr 10
+ 
+map.cstm[map.cstm$snp==b2,]
+##                             snp alle.AB alle.design alle.top alle.plus
+## 317437 Ambrosome_seq_rs193139400       A           A        A         A
+## 317438 Ambrosome_seq_rs193139400       B           G        G         G
+
+ cstm[cstm$Name==b2,]
+##                       Name.match                      Name Ch Position   SNP
+## 158719 Ambrosome_seq_rs193139400 Ambrosome_seq_rs193139400 14 68811389 [A/G]
+##        Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 158719               BOT         TOP             TOP     FALSE 14.68811389
+##        int.id  Locus_Name.des
+## 158719 158719 seq_rs193139400
+##                                                                                                                         Sequence.des
+## 158719 ACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAATAAATAAATAAATAGCCTGG[A/G]TGCGGTGGCTCACGCCTGTAATCCCAGCACTTTAGGAGGCCAAGGCAGGCAGATCACGAG
+##        Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 158719                       37             14       68811389      dbSNP
+##        Sequence_Orientation.des                        Ilmn_Id.des
+## 158719                  FORWARD seq_rs193139400-128_T_F_2127948699
+##        Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 158719                    1     InfiniumII           68811389 14.68811389
+##        Sequence.des.SNP
+## 158719            [A/G]
+
+# top blat hit is + strnad on chr 14
+
+map.cstm[map.cstm$snp==uc,]
+##                        snp alle.AB alle.design alle.top alle.plus
+## 17443 Ambrosome_rs10920298       A           A        A         A
+## 17444 Ambrosome_rs10920298       B           G        G         G
+ 
+cstm[cstm$Name==uc,]
+##                Name.match                 Name Ch  Position   SNP
+## 8722 Ambrosome_rs10920298 Ambrosome_rs10920298  1 201965661 [A/G]
+##      Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map int.id
+## 8722               BOT         TOP             TOP     FALSE 1.201965661   8722
+##      Locus_Name.des
+## 8722     rs10920298
+##                                                                                                                       Sequence.des
+## 8722 gtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgtgttttgagatggagtctcgctctgtc[A/G]cccaggctggagggcagtggcgtgatctcagctcactgcaacctccacctcccaggttca
+##      Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 8722                     37.1              1      201965661      dbsnp
+##      Sequence_Orientation.des                   Ilmn_Id.des
+## 8722                  FORWARD rs10920298-131_T_F_2091075018
+##      Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 8722                    1     InfiniumII          201965661 1.201965661
+##      Sequence.des.SNP
+## 8722            [A/G] 
+ 
+# got a BLAT result for chr1 + strand; also checked the browser view and saw that rs10920298 is in the middle of the seq, with + strand nucleotide G
+
+## ok, enough spot checking!! time to commit to the results
+
+##########
+## Create combined allele mapping file 
+########## 
+## 2/12/2014 
+
+# combine the standard exome and custom allele mappings into one file
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/" 
+
+map.std <- read.csv(paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_stdExomeVariants_alleleMappings.csv", sep=""))
+map.cstm <- read.csv( paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_alleleMappings.csv", sep=""))
+
+dim(map.std) # [1] 493038      6
+nrow(map.std)/2 #  246519 - expected number of exome array SNPs
+head(map.std)
+##                  snp alle.AB alle.design alle.top alle.fwd alle.plus
+## 1 exm-IND1-200449980       A           D        D        D         D
+## 2 exm-IND1-200449980       B           I        I        I         I
+## 3 exm-IND1-201453487       A           D        D        D         D
+## 4 exm-IND1-201453487       B           I        I        I         I
+## 5  exm-IND1-85310248       A           I        I        I         I
+## 6  exm-IND1-85310248       B           D        D        D         D 
+
+dim(map.cstm) # [1] 318072      5
+nrow(map.cstm)/2 # 159036 - expected number of custom array SNPs
+head(map.cstm)
+##                     snp alle.AB alle.design alle.top alle.plus
+## 1 Ambrosome_10_123219423       A           T        A         T
+## 2 Ambrosome_10_123219423       B           G        C         G
+## 3 Ambrosome_10_123219462       A           T        A         T
+## 4 Ambrosome_10_123219462       B           G        C         G
+## 5 Ambrosome_10_123219543       A           A        A         T
+## 6 Ambrosome_10_123219543       B           G        G         C 
+ 
+## make sure all array snps are there
+snp.fn <- paste(dir, "ambrosone_CIDR/SNP_Information/SNPs_Table_After_TechnicalFilter.csv",sep="")
+cols <- rep("NULL", times=42)
+cols[1:19] <- NA
+snp <- read.csv(file=snp.fn, colClasses=cols)
+dim(snp); head(snp,4)
+
+table(is.element(snp$Name, c(map.cstm$snp, map.std$snp))) \
+##   TRUE 
+## 405555 ## all array SNPs are in an allele mapping file
+
+# combine - exome snps have alle.fwd, but don't have for custom - delete that col from map.std for the merge 
+map.both <- rbind(map.std[,-5], map.cstm)
+nrow(map.both)/2 # 405555
+length(unique(map.both$snp))  # 405555
+
+table(is.element(snp$Name, unique(map.both$snp)))  # T for 405555
+
+write.csv(map.both, file=paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_alleleMappings.csv", sep=""), quote=FALSE, row.names=FALSE) 
+
+##########
+## Compare to Kathy Lunetta's allele mappings  
+########## 
+## 2/12/2014 
+
+## read in Kathy's file
+si <- read.csv(file=paste(dir, "accessory_files/SI/ABalleleconversiontable.csv",sep=""))
+dim(si); head(si)
+## [1] 405555      5
+##                   snp forward.A forward.B top.A top.B
+## 1  exm-IND1-200449980         D         I     D     I
+## 2  exm-IND1-201453487         D         I     D     I
+## 3   exm-IND1-85310248         I         D     I     D
+## 4 exm-IND10-102817747         I         D     I     D
+## 5  exm-IND10-18329639         D      <NA>     D  <NA>
+## 6  exm-IND10-27476467         D         I     D     I
+
+
+## info from Kathy:
+## Hi Sarah,
+
+## I did something much more elementary and simplistic.  I used the CIDR genotype and intensity files for each individual to determine what the “A” and “B” alleles are on Forward Strand and top strand.  I created a conversion table so that I can convert the A and B to either Top or Forward coding.
+
+## As I have never worked with this type of file before, I am not 100% confident in what I did.  However, I did many spot checks with dbSNP and found no errors.
+
+## I’m copying the table to the upload share directory.  Its called ABalleleconversiontable.csv.
+
+## Let me know if you need help interpreting it.
+
+## --Kathy
+
+## ok, so if SNP was monomorphic one of the alleles could be NA
+
+## make her df into 2 rows and then merge with my mappings
+
+snp.dat <- si
+
+map <- as.data.frame(c(snp.dat$snp, snp.dat$snp))
+names(map) <- "snp"
+map$alle.AB[!duplicated(map$snp)] <- "A"
+map$alle.AB[duplicated(map$snp)] <- "B"
+
+map$alle.top[map$alle.AB=="A"] <- si$top.A[match(map$snp[map$alle.AB=="A"], si$snp)]
+map$alle.top[map$alle.AB=="B"] <- si$top.B[match(map$snp[map$alle.AB=="B"], si$snp)]
+
+## add in fwd, even though I don't have this mapping
+map$alle.fwd[map$alle.AB=="A"] <- si$forward.A[match(map$snp[map$alle.AB=="A"], si$snp)]
+map$alle.fwd[map$alle.AB=="B"] <- si$forward.B[match(map$snp[map$alle.AB=="B"], si$snp)]
+
+dim(map); head(map)
+## [1] 811110      4
+##                   snp alle.AB alle.top alle.fwd
+## 1  exm-IND1-200449980       A        D        D
+## 2  exm-IND1-201453487       A        D        D
+## 3   exm-IND1-85310248       A        I        I
+## 4 exm-IND10-102817747       A        I        I
+## 5  exm-IND10-18329639       A        D        D
+## 6  exm-IND10-27476467       A        D        D
+
+## append "si" to column names so I know which fields are Kathy's
+new.names <-  paste(names(map), "si",sep=".")
+names(map) <- new.names
+
+# combine with my mappings 
+comb <- merge(map.both, map, by.x=c("snp","alle.AB"),by.y=c("snp.si","alle.AB.si"),
+              all.x=TRUE, all.y=TRUE,sort=FALSE)
+
+dim(comb); head(comb) 
+## [1] 811110      7
+##                  snp alle.AB alle.design alle.top alle.plus alle.top.si
+## 1 exm-IND1-200449980       A           D        D         D           D
+## 2 exm-IND1-200449980       B           I        I         I           I
+## 3 exm-IND1-201453487       A           D        D         D           D
+## 4 exm-IND1-201453487       B           I        I         I           I
+## 5  exm-IND1-85310248       A           I        I         I           I
+## 6  exm-IND1-85310248       B           D        D         D           D
+##   alle.fwd.si
+## 1           D
+## 2           I
+## 3           D
+## 4           I
+## 5           I
+## 6           D
+
+detach() 
+attach(comb)
+table(alle.top==alle.top.si)
+##   TRUE 
+## 681048 # good, looks like our top allele assignemnts agree
+
+## are the rest NA records from Kathy's mapping?
+sum(is.na(alle.top.si)) # 130062
+
+130062+681048  # 811110, this recovers all the records
+
+length(unique(comb$snp[is.na(alle.top.si) & alle.AB=="A"]))  # 76586
+length(unique(comb$snp[is.na(alle.top.si) & alle.AB=="B"])) # 53476
+
+na.A <- unique(comb$snp[is.na(alle.top.si) & alle.AB=="A"])
+na.B <- unique(comb$snp[is.na(alle.top.si) & alle.AB=="B"])
+length(unique(c(na.A, na.B))) # 99326
+table(is.element(na.A, na.B))
+## FALSE  TRUE 
+## 45850 30736  
+
+# look at her df (1 row per SNP) for NA instances
+sum(is.na(snp.dat$top.A) & !is.na(snp.dat$top.B)) # 45850 
+sum(is.na(snp.dat$top.B) & !is.na(snp.dat$top.A)) # 22740
+sum(is.na(snp.dat$top.B) & is.na(snp.dat$top.A)) # 30736
+
+head(snp.dat[is.na(snp.dat$top.B) & is.na(snp.dat$top.A),]) # not sure why she has all NA's for these
+##                    snp forward.A forward.B top.A top.B
+## 31  exm-IND16-48926178      <NA>      <NA>  <NA>  <NA>
+## 54  exm-IND19-49162439      <NA>      <NA>  <NA>  <NA>
+## 60  exm-IND19-56776502      <NA>      <NA>  <NA>  <NA>
+## 62  exm-IND19-60217915      <NA>      <NA>  <NA>  <NA>
+## 134  exm-IND8-30721328      <NA>      <NA>  <NA>  <NA>
+## 145     exm-rs10005603      <NA>      <NA>  <NA>  <NA>
+
+tail(snp.dat[is.na(snp.dat$top.B) & !is.na(snp.dat$top.A),]) 
+##                              snp forward.A forward.B top.A top.B
+## 405303 Ambrosome_seq_rs193287250         T      <NA>     A  <NA>
+## 405325 Ambrosome_seq_rs199844700         T      <NA>     A  <NA>
+## 405372 Ambrosome_seq_rs200891604         C      <NA>     C  <NA>
+## 405403 Ambrosome_seq_rs201364250         T      <NA>     A  <NA>
+## 405472     Ambrosome_seq_rs33329         T      <NA>     A  <NA>
+## 405486   Ambrosome_seq_rs3885125         A      <NA>     A  <NA>
+
+sum(is.na(snp.dat$top.A) | is.na(snp.dat$top.B))  # 99326
+
+## do NA in forward mappings show same pattern? 
+sum(is.na(snp.dat$forward.A) & !is.na(snp.dat$forward.B))  # 45850
+sum(is.na(snp.dat$forward.B) & !is.na(snp.dat$forward.A))  # 22740
+sum(is.na(snp.dat$forward.B) & is.na(snp.dat$forward.A))  # 30736 - yes, same mapping
+
+45850+22740  # 68590
+ 
+detach(comb) 
+
+##########
+## Revisit custom SNPs
+##########
+
+## SN 4/10/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+
+# after initial imputation run, and checking in with Hua - appears that in design manifest for custom SNPs, the alleles in the SourceSeq ARE NOT IN A/B ORDER!!
+
+## So, initially what I did was to compare the SNP alleles in the SourceSeq column to the design alleles in the SNP column to determine if the design alleles were on the + or  strand (since I had done BLAT searches to determine whether the SourceSeq was + or -). So SNP=”[A/T]” and within SourceSeq the alleles were also “[A/T]”, I concluded the design alleles were on the same strand as the SourceSeq  since I thought all these fields were following the A/B convention. But it sounds like what I need to do instead is to compare IlmnStrand (TOP or BOT for design alleles) to SourceStrand (TOP or BOT for SourceSeq). Where they are both TOP or both BOT, that means the design  alleles are on the same strand as the source strand.
+
+# read in custom annotation
+fn.in <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz", sep="")
+cstm.comb <- read.table(gzfile(fn.in), as.is=TRUE, header=TRUE)
+dim(cstm.comb); names(cstm.comb)
+##  [1] 159036     24
+##  [1] "Name.match"               "Name"                    
+##  [3] "Ch"                       "Position"                
+##  [5] "SNP"                      "Plus.Minus.Strand"       
+##  [7] "ILMN.Strand"              "Customer.Strand"         
+##  [9] "exome.std"                "map"                     
+## [11] "int.id"                   "Locus_Name.des"          
+## [13] "Sequence.des"             "Genome_Build_Version.des"
+## [15] "Chromosome.des"           "Coordinate.des"          
+## [17] "Source.des"               "Sequence_Orientation.des"
+## [19] "Ilmn_Id.des"              "Bead_Types.Assay.des"    
+## [21] "Assay_Type.des"           "Coordinate.int.des"      
+## [23] "map.des"                  "Sequence.des.SNP"
+
+head(cstm.comb$Sequence.des.SNP)  # the SNP extracted from Sequence.des
+# [1] "[T/G]" "[T/G]" "[T/C]" "[A/C]" "[A/G]" "[T/C]"
+
+head(cstm.comb$SNP) # design alleles
+# [1] "[T/G]" "[T/G]" "[A/G]" "[A/C]" "[A/G]" "[T/C]"
+
+head(cstm.comb$Sequence_Orientation.des)
+#[1] "FORWARD" "FORWARD" "FORWARD" "FORWARD" "FORWARD" "FORWARD"
+
+# if SourceStrand=IlmnStrand, the design alleles should match the alleles in SourceSeq
+# but we don't have SourceStrand or equivalent! Is it Customer.Strand we want?
+
+# Hua sent an excerpt called 'Ambrosome_15041407_5SNPs.csv'  - look at these 5 SNPs 
+cstm.comb[is.element(cstm.comb$Name, c("Ambrosome_rs1534860",
+"Ambrosome_rs7282245",
+"Ambrosome_rs2142221",
+",Ambrosome_rs961744",
+"Ambrosome_seq_rs111919489")),]
+
+# write out this file
+a <- cstm.comb[is.element(cstm.comb$Name.match, c("Ambrosome_rs1534860",
+"Ambrosome_rs7282245",
+"Ambrosome_rs2142221",
+"Ambrosome_rs961744",
+"Ambrosome_seq_rs111919489")),]
+
+dim(a)
+
+write.csv(a, file=paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_customExomeVariants_designManifestMerge_5SNPs.csv",sep=""), row.names=FALSE, quote=FALSE)
+
+## Hua apparently pulled those SNPs from this file: Ambrosome_15041407_A.csv, which we do have. read this in and see if SourceStrand is Customer Strand
+fn.in <- paste(dir, "ambrosone_CIDR/Marker_Info_Files/Ambrosome_15041407_A.csv",sep="")               
+cidr.ann <- read.csv(fn.in,skip=7, nrows=405555)
+dim(cidr.ann); names(cidr.ann)
+## [1] 405555     19
+##  [1] "IlmnID"           "Name"             "IlmnStrand"       "SNP"             
+##  [5] "AddressA_ID"      "AlleleA_ProbeSeq" "AddressB_ID"      "AlleleB_ProbeSeq"
+##  [9] "GenomeBuild"      "Chr"              "MapInfo"          "Ploidy"          
+## [13] "Species"          "Source"           "SourceVersion"    "SourceStrand"    
+## [17] "SourceSeq"        "TopGenomicSeq"    "BeadSetID"
+
+## this is the file Hua was working from
+
+## make a reduced version of this and then merge in with cstm.comb
+cidr.ann.all <- cidr.ann
+
+cidr.ann <- cidr.ann.all[,c(1:4,14:18)]
+names(cidr.ann) ## this would have given us everything we needed from the start!!
+## [1] "IlmnID"        "Name"          "IlmnStrand"    "SNP"          
+## [5] "Source"        "SourceVersion" "SourceStrand"  "SourceSeq"    
+## [9] "TopGenomicSeq"
+
+# rather than merge, reduce to custom SNPs and get it in the same order. then compare fields
+ ## SourceSeq=Sequence.des
+ ## SourceStrand=Customer Strand
+ ## SNP=SNP
+ ## IlmnStrand=ILMN.Strand
+
+# use int.id to match and order
+allequal(cstm.comb$int.id, order(cstm.comb$int.id)) # TRUE
+table(is.element(cstm.comb$Name, cidr.ann$Name))  # T for 159036
+
+# reduce to custome SNPs 
+cidr.cstm <- cidr.ann[is.element(cidr.ann$Name, cstm.comb$Name),]; dim(cidr.cstm)
+## [1] 159036      9
+
+cidr.cstm$int.id <- cstm.comb$int.id[match(cidr.cstm$Name, cstm.comb$Name)]
+
+# are they already in int.id order?
+allequal(cidr.cstm$int.id, order(cidr.cstm$int.id))  # TRUE
+
+# loop through fields of interest and check that information matches between the two 
+allequal(cstm.comb$Sequence.des,cidr.cstm$SourceSeq) # FALSE
+table(cstm.comb$Sequence.des==cidr.cstm$SourceSeq) 
+ ## FALSE   TRUE 
+ ## 38103 120933  
+
+# look at some examples of where they do not match
+ idx <- cstm.comb$Sequence.des!=cidr.cstm$SourceSeq
+head(cstm.comb[idx,c("Name","Sequence.des")],3)
+##                      Name
+## 62  Ambrosome_10_64144210
+## 72  Ambrosome_10_64148163
+## 505 Ambrosome_16_52473383
+##                                                                                                                      Sequence.des
+## 62  TTCGGTATTTCCTTCTTTCATTGTTTGACTCTCTCACTACATGTATCCATTATATGCTAA[T/C]GTAAATAACATATTTTTATGAAAAATAACTGTTTTCCCAAAAATAATTTAGTGAAAAGAG
+## 72  GAATTCCTTGCCTTATATTTCCCTTTTGTGTTCTGACATTTTTGCCTTGCAGAGAAGTTG[T/C]CACATTCAACCATTTCCTGGAAGCGGCAGCTGAGAAGGAGGTTCAAGGGAAAGCCCGGCT
+## 505 CTGGAGGCGCTGCTGCAGCTGCTGCTGCAGCTGCTGTTGATTAATTTGCTGCTGGAGATG[A/C]TGCTGCTGCTGCTGCAGGTGCTGCTGCATGTGGTGCTGGAAATGCTGCTGCTGCATCTGC
+
+head(cidr.cstm[idx,c("Name","SourceSeq")],3)
+##                          Name
+## 246581 Ambrosome_10_64144210
+## 246591 Ambrosome_10_64148163
+## 247024 Ambrosome_16_52473383
+##                                                                                                                            SourceSeq
+## 246581 TTCGGTATTTCCTTCTTTCATTGTTTGACTCTCTCACTACATGTatccattatatgctaa[T/C]gtaaataacatatttttatgaaaaataactgttttcccaaaaataatttagtgaaaagag
+## 246591 gaatTCCTTGCCTTATATTTCCCTTTTGTGTTCTGACATTTTTGCCTTGCAGAGAAGTTG[T/C]CACATTCAACCATTTCCTGGAAGCGGCAGCTGAGAAGGAGGTTCAAGGGAAAGCCCGGCT
+## 247024 ctggaggcgctgctgcagctgctgctgcagctgctgttgattaatttgctgctggagatg[A/C]tgctgctgctgctgcaggtgctgctgcatgtggtgctggaaatgctgctgctgcatctgc
+
+# is it simply a matter of case?
+allequal(toupper(cstm.comb$Sequence.des),toupper(cidr.cstm$SourceSeq)) # still FALSE
+table(toupper(cstm.comb$Sequence.des)==toupper(cidr.cstm$SourceSeq))
+  ## FALSE   TRUE 
+  ## 2132 156904  # helps most of them
+ 
+idx <- toupper(cstm.comb$Sequence.des)!=toupper(cidr.cstm$SourceSeq)
+head(cstm.comb[idx,c("Name","Sequence.des")],3)
+##                     Name
+## 1277 Ambrosome_rs1004041
+## 1289 Ambrosome_rs1004115
+## 1344 Ambrosome_rs1004611
+##                                                                                                                       Sequence.des
+## 1277 CAGCAGGCACTTGGCCAGCAGGACACAGGAGACTAGCAGAAGGAAGAGGCCGGGGAGGAA[T/G]AAGCCAGCCAGGAGGGGGAGCCTGGGGTACCCAGACTCTGAGCCCCCTGATGCTGTGATG
+## 1289 ATTGTCCTGTCTCCAATCACTACTTTACTCTTCTCCTTCCTACTCAACAGCACTTAACTT[A/C]CCCAGAAAATGCATAATGAGATGCTCAAGATTATGTTAGTGGAAAACTGCTTTTTTAACT
+## 1344 TACAGCCAGGAAGCACCATTCTCTAGTCAGCCGTGCCAGCCTCTGGTGCACCTTTCTGAC[A/G]TTGATGCACTTTGCATTATTGTAATCAATGAAACACAGTGGCTGTGAAGTTTCTGTAAGA
+
+head(cidr.cstm[idx,c("Name","SourceSeq")],3)
+##                       Name
+## 247796 Ambrosome_rs1004041
+## 247808 Ambrosome_rs1004115
+## 247863 Ambrosome_rs1004611
+##                                                                                                                            SourceSeq
+## 247796 CATCACAGCATCAGGGGGCTCAGAGTCTGGGTACCCCAGGCTCCCCCTCCTGGCTGGCTT[A/C]TTCCTCCCCGGCCTCTTCCTTCTGCTAGTCTCCTGTGTCCTGCTGGCCAAGTGCCTGCTG
+## 247808 AGTTAAAAAAGCAGTTTTCCACTAACATAATCTTGAGCATCTCATTATGCATTTTCTGGG[T/G]AAGTTAAGTGCTGTTGAGTAGGAAGGAGAAGAGTAAAGTAGTGATTGGAGACAGGACAAT
+## 247863 TCTTACAGAAACTTCACAGCCACTGTGTTTCATTGATTACAATAATGCAAAGTGCATCAA[T/C]GTCAGAAAGGTGCACCAGAGGCTGGCACGGCTGACTAGAGAATGGTGCTTCCTGGCTGTA
+
+#### write out these 2K SNPs to send to Illumina (per request 4/14/2014)
+seq.diff.out <- cbind(cidr.cstm[idx,c("Name","SourceSeq")],
+                      cstm.comb[idx,c("Name","Sequence.des","Ch","Position")])
+dim(seq.diff.out) # 2132 6
+write.csv(seq.diff.out, file=paste(dir, "sarahcn/alleleMappings/20140411_check/difSequence_vsSourceSeq.csv",sep=""), row.names=FALSE, quote=FALSE) 
+ 
+## ok, well this is not good - for these 2K SNPs, the SourceSeq and Sequence from design manifest are on opposite strands. See if this is consistent with the relationship between SourceStrand and Customer Strand
+
+allequal(cidr.cstm$SNP, cstm.comb$SNP) # TRUE, so at least design alleles match
+allequal(cidr.cstm$IlmnStrand, cstm.comb$ILMN.Strand)  # TRUE, so TOP/BOT designation of design alleles match
+allequal(cidr.cstm$SourceStrand, cstm.comb$Customer.Strand) # TRUE - that shouldn't be the case where SourceSeq and Sequence.des are on opposite strands
+
+# zoom into strand.ambiguous only
+strand.amb <- is.element(cidr.cstm$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]"))
+sum(strand.amb)  # 9329
+table(cidr.cstm$SNP[strand.amb]) 
+## [A/T] [C/G] [G/C] [T/A] 
+##  1850  2806  2671  2002
+
+table(cstm.comb$SNP[strand.amb])
+## [A/T] [C/G] [G/C] [T/A] 
+##  1850  2806  2671  2002
+
+table(toupper(cstm.comb$Sequence.des[strand.amb])==toupper(cidr.cstm$SourceSeq[strand.amb]))
+## FALSE  TRUE 
+##   13  9316
+
+idx <-  toupper(cstm.comb$Sequence.des)!=toupper(cidr.cstm$SourceSeq) & strand.amb; sum(idx)
+
+head(cidr.cstm[idx,c("Name","SNP","IlmnStrand","SourceStrand","SourceSeq")],3)
+##                        Name   SNP IlmnStrand SourceStrand
+## 252360 Ambrosome_rs1056836 [G/C]        BOT          BOT
+## 252388 Ambrosome_rs1059369 [T/A]        BOT          BOT
+## 269432    Ambrosome_rs1272 [G/C]        BOT          TOP
+##                                                                                                                            SourceSeq
+## 252360 TACCACATTCCCAAGGACACTGTGGTTTTTGTCAACCAGTGGTCTGTGAATCATGACCCA[C/G]TGAAGTGGCCTAACCCGGAGAACTTTGATCCAGCTCGATTCTTGGACAAGGATGGCCTCA
+## 252388 GCAGCCTGGTTAGCAGGTCCTCGTAGCGTTTCCGCAACTCTCGGAATCTGGAGTCTTCGG[A/T]GTGCAACTCTGAGGGTCCCGGGAAACTTGCGCGGCTCGCCTCGGCCAGAGACAGGGCGCC
+## 269432 cgactgctaatcagtatggggtttcctcccgggatggtgaaaatgttccggacctagata[C/G]tgacgaaggtagcacgacactgtgagtgcactaaatgctattgaattggacactttgaaa
+
+head(cstm.comb[idx,c("Name","SNP","ILMN.Strand","Customer.Strand","Sequence.des")],3)
+##                      Name   SNP ILMN.Strand Customer.Strand
+## 5841  Ambrosome_rs1056836 [G/C]         BOT             BOT
+## 5869  Ambrosome_rs1059369 [T/A]         BOT             BOT
+## 22913    Ambrosome_rs1272 [G/C]         BOT             TOP
+##                                                                                                                        Sequence.des
+## 5841  TGAGGCCATCCTTGTCCAAGAATCGAGCTGGATCAAAGTTCTCCGGGTTAGGCCACTTCA[C/G]TGGGTCATGATTCACAGACCACTGGTTGACAAAAACCACAGTGTCCTTGGGAATGTGGTA
+## 5869  GGCGCCCTGTCTCTGGCCGAGGCGAGCCGCGCAAGTTTCCCGGGACCCTCAGAGTTGCAC[A/T]CCGAAGACTCCAGATTCCGAGAGTTGCGGAAACGCTACGAGGACCTGCTAACCAGGCTGC
+## 22913 tttcaaagtgtccaattcaatagcatttagtgcactcacagtgtcgtgctaccttcgtca[C/G]tatctaggtccggaacattttcaccatcccgggaggaaaccccatactgattagcagtcg
+
+## asking Hua about this.
+# taking an excerpt from the first Sequence.des above and attempting to do Illumina's sequence walking method
+s1 <- "CTTCA[C/G]TGGGT"
+slash.pos <- ceiling(nchar(s1)/2); slash.pos # 8
+
+# get pairing of n+1 (downstream) and n-1 (upstream)
+nm1 <- substr(s1, slash.pos-3, slash.pos-3); nm1  # A
+np1 <- substr(s1, slash.pos+3, slash.pos+3); np1 # T
+paste(nm1,np1) # [1] "A T" ## still strand ambiguous!
+
+# move onto pairing of n+2 and n-2
+nm2 <- substr(s1, slash.pos-4, slash.pos-4); nm2
+np2 <- substr(s1, slash.pos+4, slash.pos+4); np2
+paste(nm2,np2) # C G ## still strand ambiguous!
+
+# n+3 and n-3
+nm3 <- substr(s1, slash.pos-5, slash.pos-5); nm3
+np3 <- substr(s1, slash.pos+5, slash.pos+5); np3
+paste(nm3,np3)  # T G - aha! ok, what next?
+
+ #if A or T is in first unambiguous pair 5' (upstream), then it's TOP. if A or T or is in 3' (downstream), it's BOT. So this one is TOP!
+
+ # that means Customer.Strand should be TOP instead of BOT for Ambrosome_rs1056836
+
+# create a dataframe with just strand ambiguous 
+cstm.strand.amb <- cstm.comb[is.element(cstm.comb$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]")),]
+dim(cstm.strand.amb)
+# [1] 9329   24
+
+# right a script to loop through the Sequence walking
+# let's repeat this where SourceSeq=Sequence.des, to confirm I've got it
+
+# right out strings of strand ambiguous and strand unambiguous pairings
+amb.pairs <- c("T A","A T","C G","G C",
+               "A A","C C","G G","T T")
+unamb.pairs <- c("A G","A C",
+                "C A","C T",
+                "G A","G T",
+                "T G","T C")
+
+# create empty dataframe variables to hold TOP/BOT result and the 'n' value for the n+1/n-1 walking
+cstm.strand.amb$Seq.des.IlmnStrand <- NA
+cstm.strand.amb$Seq.des.IlmnStrand.nPair <- NA
+ 
+## loop over SNPs
+for (i in 1:nrow(cstm.strand.amb)){
+
+    # make uppercase version of sequence 
+    tmp <- toupper(cstm.strand.amb$Sequence.des[i])
+
+    # check that sequence matches the "SoruceSeq" from Illumina's manifest 
+    stopifnot(tmp==toupper(cidr.cstm$SourceSeq[cidr.cstm$Name==cstm.strand.amb$Name[i]]))
+    
+    len <- nchar(tmp)
+
+    # check that "/" is in the middle positions
+    slash.pos <- ceiling(nchar(tmp)/2); slash.pos 
+    slash.chk <- substr(tmp, slash.pos, slash.pos)
+    stopifnot(slash.chk=="/")
+
+    # loop through pairs of flanking nucleotides
+    # make variable that will stay 0 until we get a strand unambiguous pairing
+    tk <- 0
+    j <- 1
+    while (tk==0) {
+
+      # set value to add or substract
+      val <- j+2
+      upstr <- substr(tmp, slash.pos-val, slash.pos-val)
+      downstr <- substr(tmp, slash.pos+val, slash.pos+val)
+
+      pair <- paste(upstr,downstr)
+
+      # decide whether to proceed - is it an ambiguous pairing?
+      if(is.element(pair,amb.pairs) & !is.element(pair, unamb.pairs))
+        {
+        # advance to next bp
+        j <- j+1
+      }
+
+      # is it an unambiguous pairing?
+      if(!is.element(pair,amb.pairs) & is.element(pair, unamb.pairs))
+        {
+        # stop at this bp
+          tk <- 1
+
+        # assign to TOP or BOT
+          if(is.element(upstr, c("A", "T"))) seq.top.bot <- "TOP"
+          if(is.element(downstr, c("A", "T"))) seq.top.bot <- "BOT"
+        }
+
+      # is it something weird?
+      if(!is.element(pair,amb.pairs) & !is.element(pair, unamb.pairs))
+        stop("The pairing is wierd at sequence ",i," position",j)
+    } # close loop through flanking sequence
+
+    cstm.strand.amb$Seq.des.IlmnStrand[i] <- seq.top.bot
+    cstm.strand.amb$Seq.des.IlmnStrand.nPair[i] <- j
+
+} # close loop over SNPS
+
+
+### test the above out with a non-custom array manifest content
+test <- cidr.ann.all[!is.element(cidr.ann.all$Name, cidr.cstm$Name),]; dim(test) # 246519
+head(test,3) 
+ 
+# let's do a test that all TopGenomicSeq turns up as TOP with my technique
+test <- test[is.element(test$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]")),]
+dim(test); head(test) # ~29K SNPs
+
+table(test$SNP)
+## [A/T] [C/G] [G/C] [T/A] 
+##  4583 11380  9522  4242
+
+with(test, table(SourceStrand, IlmnStrand))
+##              IlmnStrand
+## SourceStrand  BOT  TOP
+##          BOT 6660 8158
+##          TOP 7104 7805
+
+# flag where SourceSeq=TopGenomicSeq and confirm that SourceStrand=TOP
+idx <- test$SourceSeq==test$TopGenomicSeq; sum(idx) # 14909
+table(test$SourceStrand[idx])
+##    TOP
+## 14909 ## that's what I would hope to see
+
+ table(test$SourceStrand[!idx])
+##   BOT 
+## 14818
+
+dat <- test
+
+# col index for the sequence to use
+col.use <- 18
+ 
+###################### Run through Script - this is the generic form
+ library(stringr)
+dat$myIlmnStrand <- NA
+dat$myIlmnStrand.nPair <- NA
+
+cat("Using sequence from field",names(dat)[col.use],"\n")
+ 
+## loop over SNPs
+#for (i in 1:nrow(dat)){
+for (i in 1:100){ 
+
+    # make uppercase version of sequence
+    tmp <- toupper(dat[i,col.use])
+    len <- nchar(tmp)
+
+    # apparently the 'slash' is not always in the middle
+    slash.list <- str_locate_all(pattern ='/',tmp)
+    slash.pos <- slash.list[[1]][1]
+    slash.chk <- substr(tmp, slash.pos, slash.pos)
+    stopifnot(slash.chk=="/")
+
+    # loop through pairs of flanking nucleotides
+    # make variable that will stay 0 until we get a strand unambiguous pairing
+    tk <- 0
+    j <- 1
+    while (tk==0) {
+
+      # set value to add or substract
+      val <- j+2
+      upstr <- substr(tmp, slash.pos-val, slash.pos-val)
+      downstr <- substr(tmp, slash.pos+val, slash.pos+val)
+
+      pair <- paste(upstr,downstr)
+
+      # decide whether to proceed - is it an ambiguous pairing?
+      if(is.element(pair,amb.pairs) & !is.element(pair, unamb.pairs))
+        {
+        # advance to next bp
+        j <- j+1
+      }
+
+      # is it an unambiguous pairing?
+      if(!is.element(pair,amb.pairs) & is.element(pair, unamb.pairs))
+        {
+        # stop at this bp
+          tk <- 1
+
+        # assign to TOP or BOT
+          if(is.element(upstr, c("A", "T"))) seq.top.bot <- "TOP"
+          if(is.element(downstr, c("A", "T"))) seq.top.bot <- "BOT"
+        }
+
+      # is it something weird?
+      if(!is.element(pair,amb.pairs) & !is.element(pair, unamb.pairs))
+        stop("The pairing is wierd at sequence ",i," position",j)
+    } # close loop through flanking sequence
+
+    dat$myIlmnStrand[i] <- seq.top.bot
+    dat$myIlmnStrand.nPair[i] <- j
+
+} # close loop over SNPS
+
+## put this into a function 
+
+##################################
+
+## check whether I also got TOP
+table(dat$myIlmnStrand)  # all TOP!
+
+## repeat with col Use as pointing to SourceSeq and see if I get Source Strand
+col.use <- 17
+with(dat[1:100,], table(SourceStrand, myIlmnStrand))
+##             myIlmnStrand
+## SourceStrand BOT TOP
+##          BOT  49   0
+##          TOP   0  51 ## yay, they all match!
+
+##########
+## Assign TOP/BOT status to Sequence.des
+##########
+
+## SN 4/11/2014
+
+# have determined that rather than rely on Illumina's fields, I can determine TOP/BOT orientation myself for Sequence.des
+# then I can use my BLAT result and the TOP/BOT designation of Sequence.des to re-determine plus alleles for custom SNPs
+ 
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+
+# after initial imputation run, and checking in with Hua - appears that in design manifest for custom SNPs, the alleles in the SourceSeq ARE NOT IN A/B ORDER!!
+
+## So, initially what I did was to compare the SNP alleles in the SourceSeq column to the design alleles in the SNP column to determine if the design alleles were on the + or  strand (since I had done BLAT searches to determine whether the SourceSeq was + or -). So SNP=”[A/T]” and within SourceSeq the alleles were also “[A/T]”, I concluded the design alleles were on the same strand as the SourceSeq  since I thought all these fields were following the A/B convention. But it sounds like what I need to do instead is to compare IlmnStrand (TOP or BOT for design alleles) to SourceStrand (TOP or BOT for SourceSeq). Where they are both TOP or both BOT, that means the design  alleles are on the same strand as the source strand.
+
+# read in custom annotation
+fn.in <- paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz", sep="")
+cstm.comb <- read.table(gzfile(fn.in), as.is=TRUE, header=TRUE)
+dim(cstm.comb); names(cstm.comb)
+
+# Source the function and run in test mode
+source(paste(dir,"sarahcn/R/run_SequenceWalking_strandAmbiguousSNPs.R", sep=""))
+
+test <- seq.walking(cstm.comb, col.use=13, test=TRUE)
+## Testing on first 100 records only
+## Using sequence from field Sequence.des 
+## Done!
+
+# spot check first one 
+test[1,c("Name","SNP","Plus.Minus.Strand","ILMN.Strand","Customer.Strand","Sequence.des","myIlmnStrand","myIlmnStrand.Pair")]
+
+# sanity check - run function on non-custom part of Illumina manifest
+ill.man <-  read.csv(paste(dir, "ambrosone_CIDR/Marker_Info_Files/Ambrosome_15041407_A.csv",sep=""),
+                     skip=7, nrows=405555)
+dim(ill.man); names(ill.man)
+## [1] 405555     19
+##  [1] "IlmnID"           "Name"             "IlmnStrand"       "SNP"             
+##  [5] "AddressA_ID"      "AlleleA_ProbeSeq" "AddressB_ID"      "AlleleB_ProbeSeq"
+##  [9] "GenomeBuild"      "Chr"              "MapInfo"          "Ploidy"          
+## [13] "Species"          "Source"           "SourceVersion"    "SourceStrand"    
+## [17] "SourceSeq"        "TopGenomicSeq"    "BeadSetID"
+
+# run on TopGenomicSeq 
+test.ill <-  seq.walking(ill.man[is.element(ill.man$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]")) &
+                                 !is.element(ill.man$Name, cstm.comb$Name),],
+                         col.use=18, test=TRUE)
+## Testing on first 100 records only
+## Using sequence from field TopGenomicSeq 
+## Done!
+
+table(test.ill$myIlmnStrand)
+##  TOP 
+## 100
+
+# repeat test run on SourceSeq and verify that the results match SourceStrand
+test.ill <-  seq.walking(ill.man[is.element(ill.man$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]")) &
+                                 !is.element(ill.man$Name, cstm.comb$Name),],
+                         col.use=17, test=TRUE)
+## Testing on first 100 records only
+## Using sequence from field SourceSeq 
+## Done!
+
+with(test.ill, table(myIlmnStrand, SourceStrand))
+##             SourceStrand
+## myIlmnStrand BOT TOP
+##          BOT  49   0
+##          TOP   0  51
+ 
+## Ok, feeling confident enough about this to run on all the custom strand-ambiguous SNPs
+cstm.comb$strand.amb <- is.element(cstm.comb$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]"))
+table(cstm.comb$strand.amb) 
+##  FALSE   TRUE 
+## 149707   9329
+ 
+cstm.amb.new <- seq.walking(cstm.comb[cstm.comb$strand.amb,],col.use=13)
+## Using sequence from field Sequence.des 
+## Done!
+
+dim(cstm.amb.new); names(cstm.amb.new)
+## [1] 9329   27
+##  [1] "Name.match"               "Name"                    
+##  [3] "Ch"                       "Position"                
+##  [5] "SNP"                      "Plus.Minus.Strand"       
+##  [7] "ILMN.Strand"              "Customer.Strand"         
+##  [9] "exome.std"                "map"                     
+## [11] "int.id"                   "Locus_Name.des"          
+## [13] "Sequence.des"             "Genome_Build_Version.des"
+## [15] "Chromosome.des"           "Coordinate.des"          
+## [17] "Source.des"               "Sequence_Orientation.des"
+## [19] "Ilmn_Id.des"              "Bead_Types.Assay.des"    
+## [21] "Assay_Type.des"           "Coordinate.int.des"      
+## [23] "map.des"                  "Sequence.des.SNP"        
+## [25] "strand.amb"               "myIlmnStrand"            
+## [27] "myIlmnStrand.nPair"
+
+## add this info onto cstm.comb and save it (strand unambiguous SNPs will have NAs)
+cstm.comb$myIlmnStrand <- cstm.amb.new$myIlmnStrand[match(cstm.comb$Name, cstm.amb.new$Name)]
+table(is.na(cstm.comb$myIlmnStrand))
+ ## FALSE   TRUE 
+ ##  9329 149707
+
+cstm.comb$myIlmnStrand.nPair <- cstm.amb.new$myIlmnStrand.nPair[match(cstm.comb$Name, cstm.amb.new$Name)]
+
+# save to location where I'm doing today's checks
+fn.out <- paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt", sep="")
+
+write.table(cstm.comb, file=fn.out, quote=FALSE, row.names=FALSE, col.names=TRUE) 
+ 
+# gzip it
+system(paste("gzip",fn.out))
+ 
+## now, for cstm.cobm$SNP, we need to make sure that's design alleles and not TOP alleles.
+## right, I'd verified that earlier today - cstm.comb$SNP matches 'SNP' from Ambrosome_15041407_A.csv
+
+
+##########
+## BLAT results 1+2 - det. design allele strand wrt BLAT'd sequence, redo
+##########
+# 4/11/2014
+
+## now we can walk through this step again, but we have the TOP/BOT designation of Sequence.des for strand ambiguous SNPs
+## we can limit this whole exercise to the strand ambiguous SNP mappings - the rest are fine 
+
+## read in BLAT results for runs 1 and 2
+blat1 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set1BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat1); names(blat1)
+
+blat2 <- read.table(file=paste(dir,"sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set2BLATmatches.txt",sep=""), header=TRUE, as.is=TRUE)
+dim(blat2); names(blat2)  
+ 
+allequal(names(blat1), names(blat2))  
+
+## same columns - row bind 
+blat.all <- rbind(blat1, blat2)
+
+## limit to the strand ambiguous SNPs by merging in the relevant columns from cstm.comb
+blat.comb <- merge(blat.all,
+                   cstm.comb[cstm.comb$strand.amb,c("Name","SNP","ILMN.Strand","myIlmnStrand")],
+                   by="Name",all.x=FALSE, all.y=TRUE, sort=FALSE)
+
+dim(blat.comb) 
+# [1] 9329   34
+
+## flag where design alleles are on diff strand from blat strand (before I did this by comparing SNP to Sequence.des.SNP, which is what got me into trouble!!
+blat.comb$allesDiffStrand <- blat.comb$ILMN.Strand!=blat.comb$myIlmnStrand
+table(blat.comb$allesDiffStrand, exclude=NULL) 
+## FALSE  TRUE  <NA> 
+##  4996  4333     0
+
+## make a column to indicate +/- orientation of design alleles
+# use Illumina field name - "RefStrand", which indicates +/- strand of design alleles
+strand.opp <- ifelse(blat.comb$strand=="+","-","+")
+table(strand.opp, blat.comb$strand)
+## strand.opp    -    +
+##          -    0 8893
+##          +  423    0
+ 
+blat.comb$RefStrand <- ifelse(blat.comb$allesDiffStrand, strand.opp, blat.comb$strand)
+
+## check RefStrand assignment
+with(blat.comb[blat.comb$allesDiffStrand,], table(strand, RefStrand))
+##       RefStrand
+## strand    -    +
+##      -    0  199
+##      + 4128    0
+
+with(blat.comb[!blat.comb$allesDiffStrand,], table(strand, RefStrand))
+##        RefStrand
+## strand    -    +
+##      -  224    0
+##      +    0 4765]
+
+########## Take Ambrosone custom array and add "RefStrand" column
+blat.RefStrand <- blat.comb[,c("Name","RefStrand")]
+blat.RefStrand$strand.src <- "BLAT"
+
+# add on RefStrand info to cstm.comb
+snp.cstm <-  cstm.comb[cstm.comb$strand.amb,]
+
+## tack on available RefStrand info
+snp.cstm$RefStrand <- blat.RefStrand$RefStrand[match(snp.cstm$Name, blat.RefStrand$Name)]
+with(snp.cstm, table(RefStrand, exclude=NULL))
+##  RefStrand
+##    -    + <NA> 
+## 4352 4964   13  # we have 13 strand ambiguous SNPs w/o succesful BLAT searches
+
+##########
+## Custom exome: make allele mappings, redo, strand-ambiguous 
+##########
+ 
+# run make.allele.mappings on set from above
+# need to adjust some column names first
+names(snp.cstm)
+names(snp.cstm)[7] # [1] "ILMN.Strand"
+names(snp.cstm)[7] <- "IlmnStrand"
+
+## missing SourceSeq and SourceStrand fields, as well as IlmnID - so going to run through manual, pared down version of make allele mappings
+
+snp.dat <- snp.cstm
+cat("\tTotal number of probes:", length(snp.dat$Name), "\n") # 9392
+cat("\tTotal number of indels:", length(snp.dat$Name[is.element(snp.dat$SNP, 
+        c("[D/I]", "[I/D]"))]), "\n") # 0
+
+map <- as.data.frame(c(snp.dat$Name, snp.dat$Name))
+names(map) <- "snp"
+snp.dat$order <- 1:length(snp.dat$Name)
+map$order <- snp.dat$order[match(map$snp, snp.dat$Name)]
+map <- map[order(map$order), ]
+map$alle.AB[!duplicated(map$snp)] <- "A"
+map$alle.AB[duplicated(map$snp)] <- "B"
+snp.dat$design.A <- substr(snp.dat$SNP, 2, 2)
+snp.dat$design.B <- substr(snp.dat$SNP, 4, 4)
+snp.dat$design.A[snp.dat$SNP == "[N/A]"] <- NA
+snp.dat$design.B[snp.dat$SNP == "[N/A]"] <- NA
+
+## no indels in this set 
+# indels.dat <- snp.dat[is.element(snp.dat$design.A, c("I", 
+    "D")), ] 
+
+### continue with SNPs, using BLAT info
+
+lup <- as.data.frame(c("A", "C", "G", "T"))
+names(lup) <- "b1"
+lup$b2 <- c("T", "G", "C", "A")
+snp.dat$alle1.revcomp <- lup$b2[match(snp.dat$design.A, lup$b1)]
+snp.dat$alle2.revcomp <- lup$b2[match(snp.dat$design.B, lup$b1)]
+cat("\tDefining TOP alleles\n")
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.A[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("TOP", "P"))] <- snp.dat$design.B[is.element(snp.dat$IlmnStrand,c("TOP", "P"))]
+snp.dat$top.A[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle1.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))]
+snp.dat$top.B[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] <- snp.dat$alle2.revcomp[is.element(snp.dat$IlmnStrand, c("BOT", "M"))] 
+
+cols.keep <- c("Name","SNP","design.A", 
+        "design.B", "alle1.revcomp", "alle2.revcomp", "top.A", 
+        "top.B", "order","RefStrand")
+
+comb <- snp.dat
+dim(comb)
+# 9329 15
+head(comb,3)
+##               Name.match                   Name Ch  Position   SNP
+## 20 Ambrosome_10_123334336 Ambrosome_10_123334336 10 123334336 [G/C]
+## 24 Ambrosome_10_123334764 Ambrosome_10_123334764 10 123334764 [G/C]
+## 35 Ambrosome_10_123340358 Ambrosome_10_123340358 10 123340358 [C/G]
+##    Plus.Minus.Strand IlmnStrand Customer.Strand exome.std          map int.id
+## 20               BOT        BOT             BOT     FALSE 10.123334336     20
+## 24               BOT        BOT             TOP     FALSE 10.123334764     24
+## 35               BOT        TOP             TOP     FALSE 10.123340358     35
+##    Locus_Name.des
+## 20   10_123334336
+## 24   10_123334764
+## 35   10_123340358
+##                                                                                                                     Sequence.des
+## 20 TGTTCTTTAAGGGGGCGAGGAAGGGACAAATACTCCGCACAATATAAAGGTGAAAGTTCT[C/G]TACCTCGAGAAATACTGCCAACATAAAAACGGAGAACAAAAAGAAGTCAAAGCAACAAAC
+## 24 TCATGTTTGAAAGAAATTATATTGTTGCCCATGAGAAAATAAAAATGCACACAGAGTAAA[C/G]AGCCTAAGAATGCACTTACTGAGGAGTGAGTCACCGTGTCTCCCAATGTCCCCACCCACA
+## 35 CCCTGCTCCAAACCGCATATTTGCATAGAGGTAAAAGCTTCAAGAAAACAAACAAACTTT[C/G]AAGAGTCACTACCTCTCACAATCCTCCAAAGCAGCATTCAGAGGGAAGCTTTAGATCTCA
+##    Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 20                       37             10      123334336      dbSNP
+## 24                       37             10      123334764      dbSNP
+## 35                       37             10      123340358      dbSNP
+##    Sequence_Orientation.des                     Ilmn_Id.des
+## 20                  FORWARD 10_123334336-128_B_F_2127976173
+## 24                  FORWARD 10_123334764-128_B_R_2127976182
+## 35                  FORWARD 10_123340358-128_T_F_2127976209
+##    Bead_Types.Assay.des Assay_Type.des Coordinate.int.des      map.des
+## 20                    2      InfiniumI          123334336 10.123334336
+## 24                    2      InfiniumI          123334764 10.123334764
+## 35                    2      InfiniumI          123340358 10.123340358
+##    Sequence.des.SNP strand.amb myIlmnStrand myIlmnStrand.nPair RefStrand order
+## 20            [C/G]       TRUE          BOT                  2         +     1
+## 24            [C/G]       TRUE          TOP                  2         -     2
+## 35            [C/G]       TRUE          TOP                  3         +     3
+##    design.A design.B alle1.revcomp alle2.revcomp top.A top.B
+## 20        G        C             C             G     C     G
+## 24        G        C             C             G     C     G
+## 35        C        G             G             C     C     G
+
+## normally the function would define dbSNP FORWARD here - skip to (+) strand 
+snp.dat$plus.A[is.element(snp.dat$RefStrand, "+")] <- snp.dat$design.A[is.element(snp.dat$RefStrand, "+")]
+snp.dat$plus.B[is.element(snp.dat$RefStrand, "+")] <- snp.dat$design.B[is.element(snp.dat$RefStrand, "+")]
+snp.dat$plus.A[is.element(snp.dat$RefStrand, "-")] <- snp.dat$alle1.revcomp[is.element(snp.dat$RefStrand, "-")]
+snp.dat$plus.B[is.element(snp.dat$RefStrand, "-")] <- snp.dat$alle2.revcomp[is.element(snp.dat$RefStrand, "-")]
+
+## populate map (df with 2 rows per SNP)
+map$alle.design[map$alle.AB == "A"] <- snp.dat$design.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.design[map$alle.AB == "B"] <- snp.dat$design.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+ 
+map$alle.top[map$alle.AB == "A"] <- snp.dat$top.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.top[map$alle.AB == "B"] <- snp.dat$top.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+
+map$alle.plus[map$alle.AB == "A"] <- snp.dat$plus.A[match(map$snp[map$alle.AB =="A"], snp.dat$Name)]
+map$alle.plus[map$alle.AB == "B"] <- snp.dat$plus.B[match(map$snp[map$alle.AB =="B"], snp.dat$Name)]
+
+dim(map); head(map)
+## [1] 18658     6
+##                         snp order alle.AB alle.design alle.top alle.plus
+## 1    Ambrosome_10_123334336     1       A           G        C         G
+## 9330 Ambrosome_10_123334336     1       B           C        G         C
+## 2    Ambrosome_10_123334764     2       A           G        C         C
+## 9331 Ambrosome_10_123334764     2       B           C        G         G
+## 3    Ambrosome_10_123340358     3       A           C        C         C
+## 9332 Ambrosome_10_123340358     3       B           G        G         G
+
+na.snps <- snp.dat$Name[is.element(snp.dat$SNP, c("[N/A]", "NA"))]
+length(na.snps)  # 0 SNPs with NA alleles
+
+map.final <- map[order(map$order), -2]
+
+## save this mapping file for strand ambiguous SNPs
+length(unique(map.final$snp)) # 9329
+
+fn.out <- paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_customExomeVariants_strandAmb_alleleMappings.csv", sep="")
+write.csv(map.final, file=fn.out, quote=FALSE, row.names=FALSE)
+
+## read in the previous allele mappings file and update the records for these SNPs
+
+map.both <- read.csv(file=paste(dir, "sarahcn/alleleMappings/Ambrosone_15041407_alleleMappings.csv", sep=""))
+
+dim(map.both); length(unique(map.both$snp))
+## [1] 811110      5
+## [1] 405555
+
+# remove the newly mapped strand ambiguous SNPs
+map.keep <- map.both[!is.element(map.both$snp, map.final$snp),]
+dim(map.keep) # [1] 792452      5
+
+(792452 + 18658)/2 # 405555
+
+# add in the newly mapped strand ambiguous SNPs
+allequal(names(map.keep), names(map.final)) # TRUE
+map.new <- rbind(map.keep, map.final)
+
+# re-order by snp name
+map.srt <- map.new[order(map.new$snp),]
+
+dim(map.srt); head(map.srt)
+## [1] 811110      5
+##                           snp alle.AB alle.design alle.top alle.plus
+## 493039 Ambrosome_10_123219423       A           T        A         T
+## 493040 Ambrosome_10_123219423       B           G        C         G
+## 493041 Ambrosome_10_123219462       A           T        A         T
+## 493042 Ambrosome_10_123219462       B           G        C         G
+## 493043 Ambrosome_10_123219543       A           A        A         T
+## 493044 Ambrosome_10_123219543       B           G        G         C
+
+write.csv(map.srt, file=paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_alleleMappings_20140411.csv", sep=""), quote=FALSE, row.names=FALSE) 
+
+# write out revised file, with date included in file name
+# will run chr21 through pre-phasing and imputation again using this revised allele mappings as basis for fliplise
+
+##########
+## Investigate 'SourceSeq' in other array annotations
+##########
+# 4/14/2014
+
+# in followup discussions with Illumina, it appears that SourcSeq alleles are not in A/B order for strand ambiguous SNPs. Thought it might just be a custom array thing, but checking standard exome array:
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+sessionInfo()$otherPkgs$GWASTools$Version
+
+exm.fn <- "/projects/geneva/gcc-fs2/SNP_annotation/Illumina/HumanExome-12v1_A/HumanExome-12v1_A.csv"
+# specify row count to avoid getting those list lines of control probes
+cmnd <- paste("head -10",exm.fn, "| grep Count")
+system(cmnd) # Loci Count ,247870,,,,,,,,,,,,,,,,,,,
+# Loci Count ,247870,,,,,,,,,,,,,,,,,,,
+
+exm <- read.csv(file=exm.fn, skip=7,nrow=247870, header=TRUE)
+dim(exm); names(exm)
+
+exm.mini <- exm
+table(exm.mini$SNP[nchar(exm.mini$SNP)<6])
+
+# extract SNP from SourceSeq
+seq1 <- strsplit(exm.mini$SourceSeq, "[", fixed=TRUE)
+seq2 <- sapply(seq1, "[[", 2)
+seq3 <- strsplit(seq2, "]", fixed=TRUE)
+seq4 <-  sapply(seq3, "[[", 1)
+seq5 <- paste("[", seq4, "]", sep="")
+
+table(seq5[nchar(seq5)<6])
+
+## [-/A] [A/C] [A/G] [A/T] [-/C] [C/G] [-/G] [-/T] [T/C] [T/G] 
+##    12 17825 92234  8909    22 21112    28    21 90687 16963
+
+# check another array annotation - went to Weinberg imputation script
+bpm.fn <- "/projects/geneva/gcc-fs2/SNP_annotation/Illumina/HumanOmniExpressExome-8v1-2_A/humanomniexpressexome8v12a.csv"
+bpm <- read.csv(file=bpm.fn, skip=7, nrow=964193)
+dim(bpm); names(bpm)
+## [1] 964193     21
+##  [1] "IlmnID"           "Name"             "IlmnStrand"       "SNP"             
+##  [5] "AddressA_ID"      "AlleleA_ProbeSeq" "AddressB_ID"      "AlleleB_ProbeSeq"
+##  [9] "GenomeBuild"      "Chr"              "MapInfo"          "Ploidy"          
+## [13] "Species"          "Source"           "SourceVersion"    "SourceStrand"    
+## [17] "SourceSeq"        "TopGenomicSeq"    "BeadSetID"        "Exp_Clusters"    
+## [21] "RefStrand"
+
+table(bpm$SNP)
+ ## [A/C]  [A/G]  [A/T]  [C/G]  [D/I]  [G/C]  [I/D]  [T/A]  [T/C]  [T/G] 
+ ## 87480 386327   5093  12180     71   9996     68   4570 376234  82174
+
+with(bpm, table(SourceStrand, IlmnStrand))
+##             IlmnStrand
+## SourceStrand    BOT  MINUS   PLUS    TOP
+##        BOT   233751      0      0 247141
+##        MINUS      0      0      1      0
+##        PLUS       0     69     69      0
+##        TOP   239223      0      0 243939
+
+# extract SNP from SourceSeq
+seq1 <- strsplit(bpm$SourceSeq, "[", fixed=TRUE)
+seq2 <- sapply(seq1, "[[", 2)
+seq3 <- strsplit(seq2, "]", fixed=TRUE)
+seq4 <-  sapply(seq3, "[[", 1)
+seq5 <- paste("[", seq4, "]", sep="")
+
+table(seq5[nchar(seq5)<6])
+## [-/A]  [A/C]  [A/G]  [A/T]  [-/C]  [C/G]  [-/G]  [-/T]  [T/C]  [T/G] 
+##     12  85458 381737   9663     22  22176     27     21 380824  84196
+
+bpm$SourceSeq.SNP <- seq5
+
+# if SourceStrand!=IlmnStrand, I would expect SourceSeq.SNP to !=SNP
+
+# index strand ambiguous
+bpm$strand.amb <- is.element(bpm$SNP,c("[A/T]", "[T/A]", "[C/G]", "[G/C]"))
+
+with(bpm[bpm$strand.amb,], table(SNP, SourceSeq.SNP))
+##        SourceSeq.SNP
+## SNP     [A/T] [C/G]
+##   [A/T]  5093     0
+##   [C/G]     0 12180
+##   [G/C]     0  9996
+##   [T/A]  4570     0
+
+# look where SourceStrand=IlmnStrand
+with(bpm[bpm$strand.amb & bpm$SourceStrand=="TOP" & bpm$IlmnStrand=="TOP",],
+     table(SNP, SourceSeq.SNP))
+##        SourceSeq.SNP
+## SNP     [A/T] [C/G]
+##   [A/T]  2438     0
+##   [C/G]     0  6004 # that makes sense, with TOP 'A' is always allele A
+
+
+with(bpm[bpm$strand.amb & bpm$SourceStrand=="BOT" & bpm$IlmnStrand=="BOT",],
+     table(SNP, SourceSeq.SNP))
+##        SourceSeq.SNP
+## SNP     [A/T] [C/G]
+##   [G/C]     0  4844
+##   [T/A]  2197     0 # ok, this is where I'd expect SourceSeq.SNP to match SNP
+
+# look where SourceStrand!=IlmnStrand
+with(bpm[bpm$strand.amb & bpm$SourceStrand=="TOP" & bpm$IlmnStrand=="BOT",],
+     table(SNP, SourceSeq.SNP))
+##        SourceSeq.SNP
+## SNP     [A/T] [C/G]
+##   [G/C]     0  5152
+##   [T/A]  2373     0 # SourceSeq.SNP would = SNP if it were following A/B naming conventions
+
+## sanity check - run my R script on TopGenomicSeq for strand ambiguous
+source(paste(dir,"sarahcn/R/run_SequenceWalking_strandAmbiguousSNPs.R", sep=""))
+
+test <- seq.walking(bpm[bpm$strand.amb,],
+                     col.use=18, test=TRUE)
+## Testing on first 100 records only
+## Using sequence from field TopGenomicSeq 
+## Done!
+
+table(test$myIlmnStrand)
+## TOP 
+## 100  # that's good!

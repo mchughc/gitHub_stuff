@@ -1,0 +1,21 @@
+##########
+## Plots and metrics, redo
+##########
+# 3/26/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/HarrisC/"
+
+# run genome-wide in batch; too high memory to run on pearson head node
+
+imp_dir <- paste(dir,"imputation/", sep="")
+out_dir <- paste(dir,"sarahcn/plots/", sep="")
+study <- "HarrisC"
+schr <- 1; echr <- 23
+
+# test on chr 21
+# schr <- echr <- 21
+
+source("/projects/geneva/geneva_sata/GCC_code/Imputation_IMPUTE2/R_functions/Make_Final_Plots.R")
+make.finalimp.plot(imp_dir, out_dir, project=study, start_chr=schr, end_chr=echr)

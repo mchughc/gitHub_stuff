@@ -1,0 +1,516 @@
+## From final imputation metrics reported by IMPUTE2, make standard plots for imputation report:
+	## (1) Quality metrics at all imputed SNPs
+	## (2) Quality metrics at all masked SNPs, from IMPUTE2 internal 'leave one out' masking expirement
+## A combined version of Make_ImpMetrics_plots and Make_MaskedSNP_plots.R
+## SN, 3/26/12
+## 8/7/2012: Wenying Zheng revised masked SNP plot layout to have 3 plots
+## 1/2/2013: SN revised to plot SNPs and indels/SVs separately for all imputed metrics (masked results still just report SNPs)
+## 1/14/2014: SN streamlined code too loop through differnet variant sets (all, SNPs only, SVs and indels only) rather than repeat code
+
+## Arguments:
+## imp_dir -- directory name prefix in which "metrics" folder can be found
+## out_dir -- directory to write out plots and summaries
+## sets -- defaults to processing both imputed and masked SNP results - otherwise can specify just one
+## project -- name of project study dataset
+## start_chr -- first chrom to include in plot (defaults to start at chr1)
+## end_chr -- last chrom to include in plot (defaults to go through chrX)
+## plots -- hist, info_by_maf, and boxplot, to allow users to pick which of three plot types, for imputed and masked SNP metrics.
+        ## as of Jan 2013, removing "hist" from default list of plot types, as the histograms of info and certainty across all SNPs aren't usually that informative
+        ## "masked_check_strand" will plot concordance vs info (impuation confidence) for masked SNPs, to assess possible strand issues
+## fmt -- "pdf" or "png" format for histogram and info by MAF; boxplots have to be png to enable %d option
+
+#### Arguments specific to all imputed SNPs SNPs
+## summary -- TRUE or FALSE - whether to print out SNP counts by chrom: all study, type 2, type 0+2
+
+#### Arguments specific to masked SNPs
+## info_filt -- value from [0,1], theoretical dosage r2 threshold for second column of graphs; default to 0.8
+## verbose -- TRUE if you want to print out summary of mean and median masked SNP metrics for MAF<10% vs. MAF>=10%
+## maf_thresh - MAF value(s) used to dichotomize masked SNP results; default to 0.05
+
+########
+
+make.finalimp.plot <- function(imp_dir, out_dir, project, start_chr=1, end_chr=23, sets=c("imputed","masked"),
+							plots=c("boxplot","info_by_maf", "masked_check_strand"), fmt="pdf", summary=TRUE,
+							info_filt=0.8, verbose=TRUE, maf_thresh=0.05)
+  {
+
+  # should not have to explicitly load these libraries, but in the past have gotten sporadic "cannot find function" messages
+    require("graphics")
+    require("stats")
+    options(stringsAsFactors = FALSE)
+    
+    cat("Reading in imputation metrics on chroms", start_chr, "through", end_chr, "...\n")
+    
+    ## check that metrics files appear to be IMPUTE2 output
+    hdr <- read.table(gzfile(paste(imp_dir,"/metrics/combined/",project ,"_chr",start_chr,".metrics.gz",sep="")),nrow=1, header=TRUE, as.is=TRUE)
+    missing_columns <- !is.element(c("rs_id", "info", "certainty", "type"), names(hdr))
+    if(sum(missing_columns) > 0)
+       stop("It does not look like you've given me IMPUTE2 metrics files")
+    
+    ## loop through chosen chroms, combining metrics files
+    mets.all <- rep(NULL, times=ncol(hdr))
+    for (i in start_chr:end_chr){
+      # report which chrom is being read in, in case of errors reading the combined metrics file
+      cat("Reading chrom", i, "...\n")
+      mfil <- paste(imp_dir,"/metrics/combined/",project ,"_chr",i,".metrics.gz",sep="")
+      met <- read.table(gzfile(mfil), skip=1, as.is=TRUE, comment.char="")
+      # add chrom as final column
+      met[,ncol(met)+1] <- i
+      mets.all <- rbind(mets.all, met)
+    }
+
+    names(mets.all) <- c(names(hdr), "chr")
+
+    ## check for negative info values - they can happen, but I've not observed them yet and thus this plotting and summarizing may not deal with them appropriately. If there are negative info values, issue a warning and continue plotting
+    neg.info <- sum(mets.all$info<0)
+    if(neg.info>0) warning("There are ",neg.info," variants with negative info score; these plots and summaries may not deal with these appropriately.\n I suggest revisiting and possibly modifying this function.\n")
+
+    ## extract initial columns from gprobs to differentiate SNPs from indels and structural variants
+    alles <-  rep(NULL, times=5)
+    for (i in start_chr:end_chr){
+      a.fn <- paste(imp_dir,"/imputed/combined/",project ,"_chr",i,".alleles",sep="")
+      cmnd <- paste("zcat ",imp_dir,"/imputed/combined/",project ,"_chr",i,".gprobs.gz",
+                    " | cut -d' ' -f 2-5 >", a.fn,sep="")
+      system(cmnd)
+      alles.tmp <- read.table(file=a.fn)
+      alles.tmp[,5] <- i
+      alles <- rbind(alles, alles.tmp)
+      # remove the flat file
+      cmnd.rm <- paste("rm",a.fn)
+      system(cmnd.rm)
+    }
+
+    names(alles)=c("var","bp","a0","a1","chr")
+
+    # flag indels and SVs
+    len0 <- nchar(alles$a0)
+    len1 <- nchar(alles$a1)
+    del <- alles$a1=="-" | alles$a0=="-"
+    alles$sv.indel <- len0>1 | len1>1 | del
+    cat("Total of",sum(!alles$sv.indel),"SNPS and",sum(alles$sv.indel), "indels and structural variants...\n")
+
+    # save allele map
+    filo <- paste(out_dir, project,"_chr",start_chr,"-",end_chr,".allelemap.RData",sep="")
+    save(alles,file=filo)
+
+    # check that variants in combined gprobs match combined metrics
+    if(!all.equal(mets.all$rs_id, alles$var))
+       stop("Variant identifiers in metrics and gprobs files do not match")
+    
+    # merge alle map (with SV, indel flag) and metrics file
+    mets.ann <- cbind(mets.all, alles[,c("a0","a1","sv.indel")])
+    
+    ####### Graph and summarize final imputed metrics
+    if (is.element("imputed",sets)){
+            ## print SNP summary
+            if (summary){
+              cat("Printing SNP summary by chrom\n")
+              ## total study snps
+
+              ## read in initial SNP keep list, in case type 3 SNPs were excluded from IMPUTE2 output
+              kept <- read.table(file=paste(imp_dir, "/keeplists/snp.qualfilter.txt",sep=""),
+                                 col.names=c("snp", "chr"), comment.char="")
+              ## count by chrom
+              bychr <- as.data.frame(table(kept$chr))
+
+              ## change chrom from factor to character
+              bychr$Var1 <- as.character(bychr$Var1)
+
+              ## convert chrom to numeric code
+              bychr$Var1[bychr$Var1 == "X"] <- 23
+              bychr$chrom.int <- as.numeric(bychr$Var1)
+              bychr <- bychr[is.element(bychr$chrom.int, start_chr:end_chr),]
+              dat0 <- bychr[order(bychr$chrom.int),]
+
+              ## total input SNPs (imp basis + study only)
+              dat1 <- as.data.frame(table(mets.all$chr[is.element(mets.all$type,c(2,3))]))
+              ## total imputation basis SNPs
+              dat2 <- as.data.frame(table(mets.all$chr[is.element(mets.all$type,2)]))
+              ## total imputed SNPs
+              dat3 <- as.data.frame(table(mets.all$chr[is.element(mets.all$type,c(0,2))]))
+
+              dat1$study.snps.fmkeeplist <- dat0[,2]
+              dat1$imp.basis.snps <- dat2[,2]
+              dat1$imp.tot.snps <- dat3[,2]
+              names(dat1)[1:2] <- c("chrom", "study.snps") 
+              filo <- paste(out_dir, project,"_chr",start_chr,"-",end_chr,".SNPsummary.csv",sep="")
+              write.csv(dat1, file=filo, eol="\n", quote=FALSE, row.names=FALSE)
+            }
+
+            ## Make MAF column
+            mets.ann$maf <- ifelse(mets.ann$exp_freq_a1 > 0.5, 1-mets.ann$exp_freq_a1, mets.ann$exp_freq_a1)
+
+            ## make data frame of all type 0 (imputed) variants
+            mets.all.imp <- mets.ann[mets.ann$type==0,]
+
+            ## make data frame of type 0 SNPs
+            mets.snp.imp <- mets.all.imp[!mets.all.imp$sv.indel,]
+            nsnps <- length(mets.snp.imp$rs_id)
+
+            ## make data frame of type 0 indels and SVs
+            mets.svi.imp <- mets.all.imp[mets.all.imp$sv.indel,]
+            nsvi <- length(mets.svi.imp$rs_id)
+
+            nvar <- nsnps + nsvi
+
+            if(nvar < 100)
+              stop("Come back when you have more imputed variants to graph, not just ",nvar,"\n")
+
+            cat("Plots will represent a total of", nsnps, "imputed SNPs and",nsvi,"imputed SVs and indels  \n")
+
+            ## isolate metrics column to report filtered pcts
+            met <- mets.all.imp$info
+
+            cat("\nSummaries of imputed variants passing various 'info' score thresholds:\n")
+
+            ## loop through different thresholds
+            for (t in c(0.3,0.5,0.8)){
+              cat("Fraction of SNPs with info >",t,"is",round(sum(met[!mets.all.imp$sv.indel]>t)/nsnps,4), "\n")
+              cat("Fraction of SVs and indels with info >",t,"is",round(sum(met[mets.all.imp$sv.indel]>t)/nsvi,4), "\n")
+              cat("Fraction of all imputed variants with info >",t,"is",round(sum(met>t)/nvar,4), "\n")
+            } # close loop on thresholds
+            
+
+            # create base name for all imputed metrics plots
+            filo <- paste(out_dir, "AllImpMetrics_chr",start_chr,"-",end_chr,sep="")
+
+            # I. Create histogram of imputation metrics
+            # doesn't separate SNPs from SVs and indels (as these histograms aren't usually very illustrative anyway)
+            if (is.element("hist",plots)){
+
+            cat("making histogram plot\n")
+
+                    if (fmt=="png"){
+                    png.fn <- paste(filo, "hist.png",sep=".")
+                    png(png.fn)
+                    }
+                    if (fmt=="pdf"){
+                    pdf.fn <-  paste(filo, "hist.pdf",sep=".")
+                    pdf(pdf.fn)
+                    }
+
+                    ## Use info values to determine x-axis range
+                    cat("Minimum info score of ",min(mets.all.imp$info), "\n")
+                    idat <- hist(mets.all.imp$info, plot=FALSE)
+                    info.start <- idat$breaks[1]
+
+                    par(mfcol=c(2,1))
+                    hist(mets.all.imp$info, breaks=seq(info.start,1,by=.01),col="forestgreen",plot=TRUE,
+                             main=NULL, ylab="Number of imputed variants", xlab="'info' imputation quality metric")
+                    abline(v=0.3,lty=2)
+
+                    ## Use certainty values to determine axes range
+                    xstart <- as.numeric(substr(min(mets.all.imp$certainty),1,3))
+                    hdat <- hist(mets.all.imp$certainty, breaks=seq(xstart,1,by=.01),plot=FALSE)
+
+                    ## make ymax go up to height of second to last bar
+                    ymax <- hdat$counts[length(hdat$counts)-1]
+                    next.ymax <-  hdat$counts[length(hdat$counts)-2]
+
+                    ## Count # of SNPs not shown, where certainty>0.99
+                    nsnps <- hdat$counts[length(hdat$counts)]
+
+                    hist(mets.all.imp$certainty, breaks=seq(xstart,1,by=.01),col="deepskyblue",plot=TRUE,
+                             xlim=c(xstart, 1),ylim=c(0, ymax),
+                             main=NULL, ylab="Number of imputed variants", xlab="average certainty of best-guess genotypes")
+                    text(xstart,next.ymax,pos=4, font=3,
+                             paste("Not shown:", nsnps, "variants with certainty >",hdat$breaks[length(hdat$breaks)-1],sep=" "),cex=0.8)
+
+                    dev.off()
+
+      } # close "if" loop on whether to plot histograms
+
+
+         # II. Create boxplots of info metric and MAF, by chrom
+         ## Summarize median info metrics by chrom with box and whisker plot
+         if (is.element("boxplot",plots)){
+
+               ## loop through variant categories
+               for (set in c("snp","svs_indels","all")) {
+
+                 if(set=="snp") mets.curr <- mets.snp.imp
+                 if(set=="svs_indels") mets.curr <- mets.svi.imp
+                 if(set=="all") mets.curr <- mets.all.imp
+
+                    cat("making boxplots for",set,"variants\n")
+                    png.fn <- paste(filo, set, "boxplot_%d.png",sep=".")
+                    png(png.fn)
+
+                    boxplot(info ~ chr, data = mets.curr, outline=FALSE, 
+                    xlab = "Chromosome", ylab = "info",
+                    main = NULL,las=3,col="seashell2",cex.axis=0.9)
+
+                    boxplot(certainty ~ chr, data = mets.curr, outline=FALSE, 
+                    xlab = "Chromosome", ylab = "certainty",
+                    main = NULL,las=3,col="seashell2",cex.axis=0.9)
+
+                    boxplot(maf ~ chr, data = mets.curr, outline=FALSE, 
+                    xlab = "Chromosome", ylab = "imputed MAF",
+                    main = NULL,las=3,col="seashell2",cex.axis=0.9)
+
+                    dev.off()
+
+                  } # close loop through variant types
+      } # close "if" loop on whether to plot boxplots
+
+             # III. Plot info score by MAF bin, using MAF in the study samples
+             if (is.element("info_by_maf",plots)){
+             
+             mafs.save <- NULL
+
+               ## loop through variant categories
+               for (set in c("snp","svs_indels","all")) {
+
+                 if(set=="snp") mets.curr <- mets.snp.imp
+                 if(set=="svs_indels") mets.curr <- mets.svi.imp
+                 if(set=="all") mets.curr <- mets.all.imp
+
+                 cat("plotting info by MAF bin for",set,"variants\n")
+
+                 # make int.id for imputed variants
+                 mets.curr$id <- 1:nrow(mets.curr)
+
+                 attach(mets.curr)
+
+                ####### MAF data frame loop
+                mafs.list <- seq(0,0.5,length.out=51)
+                mafs <- as.data.frame(mafs.list[-51]); names(mafs) <- "maf.min"
+                mafs$nsnps <- mafs$mean.info <- rep(NA, times=length(mafs$maf.min))
+
+                for (i in 1:length(mafs$maf.min)){
+                  ## Count of variants per MAF bin
+                  mafs$nsnps[i] <- length(id[maf > mafs.list[i] & maf <= mafs.list[i+1]])
+                  ## Mean info
+                  mafs$mean.info[i] <- mean(info[info!=-1 & maf > mafs.list[i] & maf <= mafs.list[i+1]])
+                }
+                ####### close MAF data frame loop
+
+                detach(mets.curr)
+
+                ## plot values at the mid point of maf bin
+                xval <- mafs$maf.min+.005
+
+                if (fmt=="png"){
+                png.fn <- paste(filo, set, "info_by_studyMAF.png",sep=".")
+                png(png.fn)
+                }
+                if (fmt=="pdf"){
+                pdf.fn <- paste(filo, set,"info_by_studyMAF.pdf",sep=".")
+                pdf(pdf.fn)
+                }
+
+                ## Set margins. Default is $mar 5.1 4.1 4.1 2.1 -- increase the right margin for secondary y-axis
+                par(mar=c(5.1,4.1,4.1,4.1))
+                plot(xval, mafs$mean.info, ylim=c(mafs$mean.info[1], 1), bty='c',
+                         pch=17,xlab='MAF of imputed variants',ylab='info score (mean per MAF bin)')
+                abline(h=seq(0,1,by=0.1),lty=2,col="darkgray")
+                par(new=TRUE)
+                plot(xval, mafs$nsnps,
+                         axes=FALSE, ylab='', xlab='', bty='c',pch=4, col="darkgreen")
+                axis(4, tck=0.01, las=2)
+                mtext("variant count", 4, col="darkgreen")
+                dev.off()
+                
+                # save data frame
+                mafs$type <- set
+                mafs.save <- rbind(mafs.save,mafs)
+
+
+               } # close loop on variant type
+
+                # save MAF data frames to disk
+                save(mafs.save, file=paste(filo,"info_by_MAF.RData",sep=""))
+
+            } # close "if" loop on whether to plot info by MAF bin
+
+    } # close "if" loop on whether to process final imp metrics
+
+	####### Graph and summarize masked SNP metrics
+	if (is.element("masked",sets)){
+    
+		## Count # of SNPs in internal masked SNP expirement
+		mets.mask <- mets.ann[mets.ann$type==2 & !mets.ann$sv.indel,]
+
+		nsnps <- length(mets.mask$rs_id)
+		cat("     Total number of masked SNPs will be", nsnps, "...\n")
+
+                # report number of masked SVs or indels (expected to be 0 for most SNP arrays)
+                mets.svi.mask <- mets.ann[mets.ann$type==2 & mets.ann$sv.indel,]
+                nsvi <- length(mets.svi.mask$rs_id)
+                cat("     There are a total of",nsvi,"masked SVs and indels, which will be not be plotted/summarized...\n")
+                
+		# create base name for all masked metrics plots
+		filo <- paste(out_dir, "AllMaskedSNPMetrics_chr",start_chr,"-",end_chr,sep="") 
+
+		## Calculate MAF in imputed study samples
+		mets.mask$maf <- ifelse(mets.mask$exp_freq_a1 > 0.5, 1-mets.mask$exp_freq_a1, mets.mask$exp_freq_a1)
+
+		use <- mets.mask
+
+		attach(use)
+
+		####### MAF data frame loop
+		## use function to loop through each MAF bin and find mean masked SNP metrics values
+		mafs.list <- seq(0,0.5,length.out=51)
+		mafs <- as.data.frame(mafs.list[-51]); names(mafs) <- "maf.min"
+		mafs$nsnps <- mafs$meanr2 <- mafs$meanc <- rep(NA, times=length(mafs$maf.min))
+
+		for (i in 1:length(mafs$maf.min)){
+		  ## Count of SNPs per MAF bin
+		  mafs$nsnps[i] <- length(position[maf > mafs.list[i] & maf <= mafs.list[i+1]])
+		  ## Mean dosage r2
+		  mafs$meanr2[i] <- mean(r2_type0[!is.na(r2_type0) & maf > mafs.list[i] & maf <= mafs.list[i+1]])
+		  ## Mean concordance
+		  mafs$meanc[i] <- mean(concord_type0[maf > mafs.list[i] & maf <= mafs.list[i+1]])
+		}
+		####### MAF data frame loop
+		
+		## remove MAF bins with no snps
+		mafs <-  mafs[mafs$nsnps>0,]
+
+		detach(use)
+
+		mafs.all <- mafs
+
+		## repeat thresholding on info_type0
+		use.r2 <- mets.mask[mets.mask$info_type0>=info_filt,]; dim(use.r2)
+		attach(use.r2) ## run MAF data frame loop
+
+		####### MAF data frame loop
+		## use function to loop through each MAF bin and find mean concordance values
+		mafs.list <- seq(0,0.5,length.out=51)
+		mafs <- as.data.frame(mafs.list[-51]); names(mafs) <- "maf.min"
+		mafs$nsnps <- mafs$meanr2 <- mafs$meanc <- rep(NA, times=length(mafs$maf.min))
+
+		for (i in 1:length(mafs$maf.min)){
+		  ## Count of SNPs per MAF bin
+		  mafs$nsnps[i] <- length(position[maf > mafs.list[i] & maf <= mafs.list[i+1]])
+		  ## Mean dosage r2
+		  mafs$meanr2[i] <- mean(r2_type0[!is.na(r2_type0) & maf > mafs.list[i] & maf <= mafs.list[i+1]])
+		  ## Mean concordance
+		  mafs$meanc[i] <- mean(concord_type0[maf > mafs.list[i] &  maf <= mafs.list[i+1]])
+		}
+		####### MAF data frame loop
+
+		detach(use.r2)
+
+		mafs.dosr2 <- mafs 
+		mafs.dosr2$pct.snps <- round(mafs.dosr2$nsnps/mafs.all$nsnps,3)
+
+    ## combine two data frames of average metrics by MAF bin
+    mafs.all$pct.snps <- 1
+    mafs.comb <- rbind(mafs.all, mafs.dosr2)
+    save(mafs.comb, file=paste(filo, "mets_by_MAF.RData", sep=""))
+
+		## plot values at the mid point of maf bin
+		xval <- mafs$maf.min+.005
+
+		#### masked SNP plots: (1) SNP count; (2) Dosage; (3) Concordance
+		#### with and without an info_type0 threshold
+		#### 1x3 landscape plot (per Wenying Zheng revision, 8/7/2012)
+   
+		pdf.fn <- paste(filo,"comboplot.pdf",sep=".")
+		pdf(pdf.fn, width=20, height=8, paper="a4r")
+		par(mfcol=c(1,3), mar=c(1, 4, 1, 3), pty="s")	    ## version for square
+
+		## plot for snp count
+		plot(x=xval, y=mafs.all$nsnps, bty='c',pch=16,xlab='',ylab='',lwd=2)
+        	mtext("SNP Count",2,line=2, cex=0.8)
+		mtext("Study MAF",1,line=2.5, cex=0.8, font=3)
+		par(new=TRUE)
+		plot(xval, mafs.dosr2$pct.snps*100,axes=FALSE, ylab='', xlab='', bty='c',pch=16, col="darkgray", lwd=2)
+		axis(4, at=c(0,110), labels=c("",""), lwd.ticks=0)
+		axis(4)
+		mtext("% SNP from bin",4,line=2, cex=0.8,col="darkgray")
+		legend("right", c("all SNPs", paste("SNPs with info_type0>=",info_filt)),
+                       pch=c(16,16), col=c("black", "darkgray"), bg="white")
+			
+		## plot for dosage
+		plot(x=xval, y=mafs.all$meanr2,ylim=c(min(mafs.all$meanr2, na.rm=TRUE),1), pch=16,xlab='',ylab='')
+		mtext("Dosage r2",2,line=2, cex=0.8)
+		mtext("Study MAF",1,line=2, cex=0.8, font=3)
+		abline(h=seq(0,1,by=0.1),lty=2,col="darkgray")
+		points(x=xval, y=mafs.dosr2$meanr2, pch=16, col="darkgray")
+		legend("bottomright", c("all SNPs", paste("SNPs with info_type0>=",info_filt)),
+                       pch=c(16,16), col=c("black", "darkgray"), bg="white")
+				
+		## plot for concordance
+		plot(x=xval, y=mafs.all$meanc,ylim=c(min(mafs.all$meanc, na.rm=TRUE),1), pch=16,xlab='',ylab='')
+		mtext("Concordance",2,line=2, cex=0.8)
+		mtext("Study MAF",1,line=2, cex=0.8, font=3)
+		abline(h=seq(0,1,by=0.01),lty=2,col="darkgray")
+		points(x=xval, y=mafs.dosr2$meanc, pch=16, col="darkgray")
+		legend("topright", c("all SNPs",  paste("SNPs with info_type0>=",info_filt)),
+                       pch=c(16,16), col=c("black", "darkgray"), bg="white")
+				
+		dev.off()  
+	   
+		if (verbose){
+
+		  for (m in maf_thresh){
+			cat("Dichotomizing masked SNP metrics by study MAF of ",maf_thresh, "\n")
+			## Report mean and median concordance for two MAF bins: < 10% and >= 10%
+			cat("Summary of concord_type0 \n")
+			mna <- mean(mets.mask$concord_type0[mets.mask$maf < maf_thresh])
+			mda <- median(mets.mask$concord_type0[mets.mask$maf<  maf_thresh])
+			mnb <- mean(mets.mask$concord_type0[mets.mask$maf>=  maf_thresh])
+			mdb <- median(mets.mask$concord_type0[mets.mask$maf>= maf_thresh])
+
+			cat(">>>>> MAF < ", maf_thresh,", mean=",mna ,"median=",mda,"...\n")
+			cat(">>>>> MAF >=", maf_thresh, ", mean=",mnb ,"median=",mdb,"...\n")    
+
+			cat("Summary of r2_type0 \n")
+			mna <- mean(mets.mask$r2_type0[mets.mask$maf< maf_thresh])
+			mda <- median(mets.mask$r2_type0[mets.mask$maf<  maf_thresh])
+			mnb <- mean(mets.mask$r2_type0[mets.mask$maf>=  maf_thresh])
+			mdb <- median(mets.mask$r2_type0[mets.mask$maf>=  maf_thresh])
+
+			cat(">>>>> MAF < ", maf_thresh,", mean=",mna ,"median=",mda,"...\n")
+			cat(">>>>> MAF >= ", maf_thresh,", mean=",mnb ,"median=",mdb,"...\n")
+
+			nlowmaf <- length(mets.mask$pos[mets.mask$maf<  maf_thresh])
+			nhimaf <- length(mets.mask$pos[mets.mask$maf>=  maf_thresh])
+			cat("Count of SNPs w/study MAF < ", maf_thresh ,": ", nlowmaf,"\n")
+			cat("Count of SNPs w/study MAF >= ", maf_thresh, ": ", nhimaf,"\n")
+		}
+	  } ## close "if" loop on whether to verbosely report masked SNP metrics
+
+    ## transparent dot plot makes huge pdf file - do png instead
+    if (is.element("masked_check_strand",plots)) {
+		png.fn <- paste(filo,"check_strand.png",sep=".")
+		png(png.fn)
+		par(mar=c(5, 5, 3, 5))
+
+                # flag strand ambiguous SNPs
+                mets.mask$strand.amb <- (mets.mask$a0=="A" & mets.mask$a1=="T") |
+                (mets.mask$a0=="T" & mets.mask$a1=="A") |
+                (mets.mask$a0=="C" & mets.mask$a1=="G") |
+                (mets.mask$a0=="G" & mets.mask$a1=="C")
+
+                mets.mask$col[mets.mask$strand.amb] <- "black"
+                mets.mask$col[!mets.mask$strand.amb] <- rgb(0,100,0,50,maxColorValue=255)
+
+                mets.mask$symbol[mets.mask$strand.amb] <- 8
+                mets.mask$symbol[!mets.mask$strand.amb] <- 16
+                
+		# High Density Scatterplot with Color Transparency
+		x <- mets.mask$info_type0
+		y <- mets.mask$concord_type0
+		plot(x,y, col=mets.mask$col, pch=mets.mask$symbol, xlab='',ylab='',xlim=c(0,1), ylim=c(0,1))
+		abline(a=0,b=1)
+    legend(0,0.7, c("strand unambiguous", "strand ambiguous (A/T or C/G)" ),cex=0.8,
+           pch=c(16,8), col=c("darkgreen","black"), bg="white", bty="n")
+		mtext("concord_type0",2,line=2.5, cex=1.2)
+		mtext("info_type0",1,line=2.5, cex=1.2, font=3)
+		dev.off()
+    } ## close "if" loop on whether to make masked_
+	
+	} # close "if" loop on whether to process final masked SNP metrics
+
+    # "allelemap" is quite large - no longer needed
+    filo <- paste(out_dir, project,"_chr",start_chr,"-",end_chr,".allelemap.RData",sep="")
+    cat("Deleting", filo,"\n")
+    cmnd <- paste("rm", filo)
+    system(cmnd)
+	
+} # close function definition

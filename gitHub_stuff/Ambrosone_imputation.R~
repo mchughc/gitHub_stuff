@@ -1,0 +1,1518 @@
+## Imputation analysis script for Ambrosone breast cancer study
+## SN 4/4/2014
+
+########## CONTENTS
+## Select imputation SNPs
+## Check imputation basis density, by segment
+## Make fliplist
+## Select imputation samples
+## Preview chrom anom status
+## Check family info
+## Plots and metrics, chr21 test
+## Write out revised flip list
+## Plots and metrics, chr21 test, post revised flip list
+## Determine chrX imputation target
+## Investigate imp quality over a chrom
+## Final plots and metrics
+## Check imputation basis density, by segment, redo
+## Summarize imp quality over exomes
+
+
+
+## Check type 2 SNP density
+    # initial segment check is with *potential* type 2 SNPs (i.e. type2+type3)
+
+
+
+
+## Imputation basis density, by segment
+# Write out consent list
+
+##########
+
+##########
+## Select imputation SNPs
+##########
+# 4/4/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# load in dbGaP files with SNP info
+snp.ann <-  read.csv(file=paste(dir,"dbGaP/To_dbGaP/SNP_annotation.csv",sep=""))
+dim(snp.ann); names(snp.ann)
+## [1] 405555     11
+##  [1] "rsID"              "snpID"             "RS_dbSNP137"      
+##  [4] "chrom"             "position"          "Intensity.Only"   
+##  [7] "Aux"               "chrom.ilm"         "Comment"          
+## [10] "Manually.Reviewed" "dup.pos.id"
+
+snp.rslt <-  read.csv(file=paste(dir,"dbGaP/To_dbGaP/SNP_analysis.csv",sep=""))
+dim(snp.rslt); names(snp.rslt)
+## [1] 405555     16
+##  [1] "rsID"                "cluster.sep"         "missing.n1"         
+##  [4] "hwe.pvalue"          "dup.scan.discord"    "dup.scan.sampsize"  
+##  [7] "mendel.err.count"    "mendel.err.sampsize" "A.freq.study"       
+## [10] "MAF.study"           "A.freq.study.male"   "A.freq.study.female"
+## [13] "het.female"          "redundant"           "dup.probe.disc"     
+## [16] "composite.filter"
+
+# look at definition for composite filter
+system("grep composite.filter /projects/cidr/Ambrosone/dbGaP/To_dbGaP/SNP_analysis_DD.txt")
+## composite.filter	FALSE for SNPs with missing.n1>=0.02, redundant=TRUE, cluster.sep<0.2, dup.scan.discord>2, mendel.err.count>1, hwe.pvalue<1e-4	logical
+
+# in addition, also exclude each member of a dup.pos.disc=TRUE (duplicated positions but with>22 discordance genotypes)
+system("grep dup.probe.disc /projects/cidr/Ambrosone/dbGaP/To_dbGaP/SNP_analysis_DD.txt")
+## dup.probe.disc	indicator where TRUE means that this probe has one or more positional duplicates (see dup.pos.id) with >22 discordant genotype calls out of ~6900	logical
+
+# combine the dfs
+allequal(snp.ann$rsID, snp.rslt$rsID) # TRUE
+snp.comb <- cbind(snp.ann, snp.rslt[,-1])
+dim(snp.comb); names(snp.comb)
+## [1] 405555     26
+##  [1] "rsID"                "snpID"               "RS_dbSNP137"        
+##  [4] "chrom"               "position"            "Intensity.Only"     
+##  [7] "Aux"                 "chrom.ilm"           "Comment"            
+## [10] "Manually.Reviewed"   "dup.pos.id"          "cluster.sep"        
+## [13] "missing.n1"          "hwe.pvalue"          "dup.scan.discord"   
+## [16] "dup.scan.sampsize"   "mendel.err.count"    "mendel.err.sampsize"
+## [19] "A.freq.study"        "MAF.study"           "A.freq.study.male"  
+## [22] "A.freq.study.female" "het.female"          "redundant"          
+## [25] "dup.probe.disc"      "composite.filter"
+
+# how many do we through out via dup.probe.disc
+sum(snp.comb$dup.probe.disc & snp.comb$composite.filter) # 67 - not enough to quibble over choosing one from each positional dup pair
+
+#### select imputation basis SNPs:
+# choose only SNPs mapped to chr1-22, X; with position!=0
+snp.keep <- snp.comb[snp.comb$composite.filter &
+                    is.element(snp.comb$chrom, c(1:22,"X"))&
+                    snp.comb$position!=0 &
+                    !snp.comb$dup.probe.disc,
+                    c("rsID","chrom","position", "missing.n1", "redundant","dup.probe.disc")]
+
+dim(snp.keep); head(snp.keep)
+## [1] 369429      6
+##         rsID chrom position   missing.n1 redundant dup.probe.disc
+## 1 exm2268640     1   762320 0.0048543689     FALSE          FALSE
+## 2      exm41     1   861349 0.0000000000     FALSE          FALSE
+## 4      exm44     1   865584 0.0001386963     FALSE          FALSE
+## 6      exm47     1   865628 0.0000000000     FALSE          FALSE
+## 8      exm53     1   865665 0.0004160888     FALSE          FALSE
+## 9      exm55     1   865694 0.0006934813     FALSE          FALSE
+
+# sanity check on selections
+summary(snp.keep$missing.n1)
+##      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+## 0.0000000 0.0000000 0.0000000 0.0005941 0.0001387 0.0199700 # right, all <2% missing
+
+sum(snp.keep$redundant) + sum(snp.keep$dup.probe.disc) # 0
+
+table(snp.keep$chrom)
+##     1    10    11    12    13    14    15    16    17    18    19     2    20 
+## 32363 20359 22235 19522  7308 13548 10585 17082 16081  7184 18635 29466  8593 
+##    21    22     3     4     5     6     7     8     9     X 
+##  4272  7398 22623 14865 19544 22774 16557 15521 16763  6151
+
+# write snp keep list
+write.table(snp.keep[,1:2], file=paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""),
+            col.names=F,row.names=F, quote=F,eol = "\n")
+
+############# Note below in writing out flip list, I remove 22 of these SNPs that didn't have plus strand allele mappings (i.e. no good BLAT matches, couldn't determine plus alleles from UCSC Table Browser)
+
+##########
+## Check imputation basis density, by segment
+##########
+# 4/4/2014
+
+# the array is exome + custom. before running imputation with current segment scheme, check imptuation basis SNP density per segment. if there are segs with 0 potential type 2 SNPs, we need to rework segmentation scheme, potentilaly
+# may need to ask Oxstatgen listserv advice - is it better to have some crappily imputed 5 MB segs with no type 2 SNPs, or to merge into 10 MB segments with some type 2 SNPs? Might interfere with IMPUTE2's intended imputation algorithm
+
+## read in segmentation scheme
+kgdir <- "/projects/geneva/gcc-fs2/Imputation/reference/1000Genomes/20101123/"
+segs <- read.csv(file=paste(kgdir, "IMPUTE/ALL_1000G_phase1integrated_SHAPEIT2_impute/segments/Allchrs_analysis_chunks_5MB.csv",sep=""))
+dim(segs); head(segs)
+## [1] 546   6
+##   chrom segment mb.start mb.end bp.start   bp.end
+## 1     1       1        0      5        1  5000000
+## 2     1       2        5     10  5000001 10000000
+## 3     1       3       10     15 10000001 15000000
+## 4     1       4       15     20 15000001 20000000
+## 5     1       5       20     25 20000001 25000000
+## 6     1       6       25     30 25000001 30000000
+
+# use df of snp keep list, including position
+study <- snp.keep[,1:3]
+
+# get numeric chrom
+study$chrom.char <- study$chrom
+study$chrom <- ifelse(study$chrom.char=="X", 23, as.numeric(study$chrom.char))
+
+## loop through chrs
+short.obssegs <- NULL
+densities <- NULL
+numsnps <- NULL
+
+## print output to file
+sink(file=paste(dir,"sarahcn/docs/Exome+AmbrosoneCustom_impute2seg_density_v0.txt",sep=""))
+for (i in 1:23){
+#for (i in 1:2){
+  dat <- segs[segs$chrom==i,]
+  dat$bp.start <- dat$mb.start * 1e6
+  dat$bp.end <- dat$mb.end * 1e6
+  snps <- study[study$chrom==i,]
+  ## loop through segments
+  cat(paste("Chrom:",i,sep=" "),"\n")
+  for (s in 1:max(dat$segment)){
+    segsnps <- snps$position>=dat$bp.start[dat$segment==s] & snps$position<=dat$bp.end[dat$segment==s]
+    cat(paste("    segment", s,"has", sum(segsnps), "type 2 SNPs",sep=" "),"\n")
+
+    if(sum(segsnps)<100)
+    {cat("Yikes! Very Few SNPs","\n"); id <- paste(i,s,sum(segsnps),sep="."); short.obssegs <- c(short.obssegs, id)}
+    ## collect a vector of these SNP ids
+
+    ## capture the density of imputation basis (type 2) SNPs - # SNPs per MB
+
+    ######## NOTE THIS IS WRONG FOR DENSITIES - 'segsnps' is a logical vector, so the numerator should be length(segsnps)
+    density <- length(segsnps)/((dat$bp.end[dat$segment==s]-dat$bp.start[dat$segment==s])/1e6)
+    densities <- c(densities, density)
+    numsnps <- c(numsnps, sum(segsnps))
+    
+   } ## close segment loop
+} ## close chrom loop
+
+sink(file=NULL)
+
+summary(numsnps) # oh great! no segments with 0 SNPs; 21 is low, but not worth re-doign imputation segments for
+   ## Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   ## 21.0   297.0   512.5   676.6   844.5  3834.0
+
+length(short.obssegs) # only 16 segments with <100 potential type 2 SNPs
+
+short.obssegs # several of these are still > 80 SNps
+##  [1] "1.34.87"  "4.7.63"   "4.25.73"  "5.5.54"   "5.6.58"   "13.8.54" 
+##  [7] "13.10.58" "13.14.88" "13.15.94" "14.2.65"  "16.10.53" "18.7.95" 
+## [13] "23.16.21" "23.17.64" "23.21.96" "23.27.63"
+
+##########
+## Make fliplist
+##########
+# 4/4/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# these allele mappings were the joint product of Illumina annotation (for standard exome array) and my BLAT searches (for custom SNPs)
+alle.map <- read.csv(paste(dir,"dbGaP/To_dbGaP/SNP_allelemap.csv",sep=""))
+dim(alle.map); head(alle.map)
+## [1] 811110      5
+##                  snp alle.AB alle.design alle.top alle.plus
+## 1 exm-IND1-200449980       A           D        D         D
+## 2 exm-IND1-200449980       B           I        I         I
+## 3 exm-IND1-201453487       A           D        D         D
+## 4 exm-IND1-201453487       B           I        I         I
+## 5  exm-IND1-85310248       A           I        I         I
+## 6  exm-IND1-85310248       B           D        D         D
+
+# check if any SNPs missing plus strand info are in the SNP keep list
+# Plus strand mappings were ultimately unattainable for 13 SNPs (strand ambiguous) and 28 insertion/deletion variants
+snp.keep <- read.table(file=paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""),
+                       col.names=c("rsID","chrom"))
+table(is.element(snp.keep$rsID, alle.map$snp)) ## all T
+
+table(alle.map$alle.plus, exclude=NULL) ## 82 NA's
+(28+13)*2 # 82
+
+table(is.element(snp.keep$rsID, alle.map$snp[is.na(alle.map$alle.plus)])) # T for 22 -- need to exclude these SNPs from the keeplist
+
+snp.keep.new <- snp.keep[!is.element(snp.keep$rsID, alle.map$snp[is.na(alle.map$alle.plus)]),]
+dim(snp.keep); dim(snp.keep.new)
+## [1] 369429      2
+## [1] 369407      2
+
+nrow(snp.keep)-nrow(snp.keep.new) # 22
+
+write.table(snp.keep.new[,1:2], file=paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""),
+            col.names=F,row.names=F, quote=F,eol = "\n")
+
+# flip where TOP alleles are not plus alleles
+amap <- alle.map
+alleA <- amap[amap$alle.AB=="A",]
+flip.idx <- alleA$alle.top!=alleA$alle.plus
+head(alleA[flip.idx,])
+##               snp alle.AB alle.design alle.top alle.plus
+## 273 exm-rs1000005       A           C        C         G
+## 275 exm-rs1000026       A           A        A         T
+## 277 exm-rs1000053       A           A        A         T
+## 279 exm-rs1000110       A           A        A         T
+## 281 exm-rs1000113       A           T        A         T
+## 287 exm-rs1000203       A           A        A         T
+
+with(alleA[flip.idx,],table(alle.top, alle.plus))
+##         alle.plus
+## alle.top      G      T
+##        A      0 186418
+##        C  10631      0
+
+with(alleA[!flip.idx,],table(alle.top, alle.plus))
+##         alle.plus
+## alle.top      A      C      D      I
+##        A 192586      0      0      0
+##        C      0  15740      0      0
+##        D      0      0     71      0
+##        I      0      0      0     68 ## right, indels won't get used anyway (until we decide to repliad PLINK "I" and "D" with the verbose alleles
+
+flip.all <- alleA$snp[flip.idx]
+length(flip.all); head(flip.all)
+## [1] 197090
+## [1] "exm-rs1000005" "exm-rs1000026" "exm-rs1000053" "exm-rs1000110"
+## [5] "exm-rs1000113" "exm-rs1000203"
+
+# restrict to imputation basis (composite filter passing, chrs 1-22, X, non missing position)
+flip.qual <- flip.all[is.element(flip.all, snp.keep.new$rsID)]
+length(flip.qual) # [1] 179585
+
+write.table(flip.qual, file=paste(dir,"imputation/keeplists/fliplist.txt",sep=""),
+            col.names=F,row.names=F, quote=F,eol = "\n")
+
+##########
+## Select imputation samples
+##########
+# 4/4/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library(GWASTools)
+
+# Read in dbGaP sample annotations
+samp.ann <- read.csv(file=paste(dir,"dbGaP/To_dbGaP/Sample_annotation.csv",sep=""))
+dim(samp.ann); names(samp.ann)
+## [1] 6930   24
+##  [1] "SUBJECT_ID"                  "genorun.id"                 
+##  [3] "SAMPLE_ID"                   "Aux"                        
+##  [5] "DNA.Source"                  "Sample.Plate"               
+##  [7] "Sample.Well"                 "Redo.Processing.Plate"      
+##  [9] "Deepwell.Plate"              "Deepwell.Position"          
+## [11] "Array.Info.Sentrix.ID"       "Array.Info.Sentrix.Position"
+## [13] "geno.cntl"                   "coriell.id"                 
+## [15] "pop.group"                   "DNA_ExtMeth"                
+## [17] "sex"                         "file"                       
+## [19] "project"                     "scanID"                     
+## [21] "family"                      "mother"                     
+## [23] "father"                      "consent"
+
+# there are 2 consent levels among study samples
+system("grep consent /projects/cidr/Ambrosone/dbGaP/To_dbGaP/Sample_annotation_DD.txt")
+## consent	1=Cancer Research and Methods; 2=Breast cancer only, collaborative agreement; 0=Subjects did not participate in the study, did not complete a consent document and are included only for the pedigree structure and/or genotype controls, such as HapMap subjects	numeric
+
+with(samp.ann, table(geno.cntl, consent))
+##          consent
+## geno.cntl    0    1    2
+##         0    0   30 6830
+##         1   70    0    0
+
+samp.rslt <- read.csv(file=paste(dir,"dbGaP/To_dbGaP/Sample_analysis.csv",sep=""))
+dim(samp.rslt); names(samp.rslt)
+## [1] 6930   25
+##  [1] "SUBJECT_ID"   "SAMPLE_ID"    "missing.e1"   "miss.e1.auto" "miss.e1.xchr"
+##  [6] "sexChr.anom"  "het.A"        "het.X"        "het.XY"       "het.Y"       
+## [11] "het.M"        "verifyID"     "unrelated"    "missing.e2"   "miss.e2.auto"
+## [16] "miss.e2.xchr" "hwe"          "EV1"          "EV2"          "EV3"         
+## [21] "EV4"          "EV5"          "EV6"          "EV7"          "EV8"
+
+# include all study samples with MCR < 2%
+summary(samp.rslt$missing.e2)
+##      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+## 0.0001425 0.0002956 0.0004249 0.0010700 0.0008314 0.0231300
+
+sum(samp.rslt$missing.e2>0.02) # 2 samples; matches QC report
+
+# preview PLINK IDs
+system("cut -d' ' -f 1-2 /projects/cidr/Ambrosone/plink/subjects/Ambrosone_BreastCancer_TOP_subject_level.fam | head")
+## DBG841822 DBG841822
+## DBG829764 DBG829764
+## DBG822087 DBG822087
+## DBG802811 DBG802811
+## DBG823658 DBG823658
+## DBG838680 DBG838680
+## DBG804022 DBG804022
+## DBG824556 DBG824556
+## DBG830789 DBG830789
+## DBG801117 DBG801117
+
+head(samp.rslt$SUBJECT_ID) # [1] "DBG841822" "DBG829764" "DBG822087" "DBG802811" "DBG823658" "DBG838680"
+
+allequal(samp.rslt$SUBJECT_ID, samp.ann$SUBJECT_ID) # TRUE
+
+samp.keep <- samp.ann[samp.ann$geno.cntl==0 & samp.rslt$missing.e2<=0.02,
+                      c("family","SUBJECT_ID")]
+
+dim(samp.keep); head(samp.keep)
+## [1] 6858    2
+##      family SUBJECT_ID
+## 1 DBG841822  DBG841822
+## 2 DBG829764  DBG829764
+## 3 DBG822087  DBG822087
+## 4 DBG802811  DBG802811
+## 5 DBG823658  DBG823658
+## 6 DBG838680  DBG838680
+
+write.table(samp.keep, file=paste(dir,"imputation/keeplists/sampkeep.txt",sep=""),
+            col.names=F,row.names=F, quote=F,eol = "\n")
+
+##########
+## Preview chrom anom status
+##########
+# 4/4/2014
+
+# look at distribution of partial and whole chrom anomalies among imputed study samples
+anoms <- read.csv(file=paste(dir,"dbGaP/To_dbGaP/chromosome_anomalies/chromosome_anomalies.csv",sep=""))
+dim(anoms); names(anoms)
+## [1] 25 17
+##  [1] "scanID"           "chromosome"       "filter"           "whole.chrom"     
+##  [5] "comment"          "geno.cntl"        "sex"              "nbase"           
+##  [9] "left.base"        "right.base"       "non.anom.baf.med" "non.anom.lrr.med"
+## [13] "anom.baf.dev.med" "anom.lrr.med"     "SAMPID"           "SUBJID"          
+## [17] "plot.name"
+
+# reduce to imputation samples 
+anoms.keep <- anoms[is.element(anoms$scanID,samp.ann$scanID[samp.ann$geno.cntl==0 & samp.rslt$missing.e2<=0.02]),]
+dim(anoms.keep) # 21 17
+
+setdiff(anoms$SUBJID, samp.keep$SUBJECT_ID) # [1] "NA19036" "NA07055"  - HapMap samples with anomalies
+
+# look at whole chrom
+whole.chr <- anoms.keep[anoms.keep$filter & anoms.keep$whole.chrom,c("SUBJID","chromosome")]
+whole.chr[order(as.numeric(whole.chr$chromosome)),] # 6 whole chrom anomalies recommended for filtering
+##       SUBJID chromosome
+## 8  DBG823804          2
+## 25 DBG827084          2
+## 2  DBG817476          7
+## 18 DBG826372         13
+## 17 DBG812648         18
+## 7  DBG824626         21
+
+# look at partial chrom
+part.chr <- anoms.keep[anoms.keep$filter & !anoms.keep$whole.chrom,c("SUBJID","chromosome")]
+dim(part.chr) # 1 
+table(part.chr$chromosome)
+part.chr[order(as.numeric(part.chr$chromosome)),]
+##       SUBJID chromosome
+## 15 DBG831867          3 # chr3 is only partial chr anom recommended for filtering
+
+# consistent with qc report, which says 7 anoms recommended for filtering (6 whole chrom, 1 partial)
+
+# what are the chr 3 coordinates?
+part.chr <- anoms.keep[anoms.keep$filter & !anoms.keep$whole.chrom,c("SUBJID","chromosome", "left.base","right.base")]; part.chr
+##       SUBJID chromosome left.base right.base
+## 15 DBG831867          3  97741821  197215230
+
+# in MB
+part.chr$left.base/1e6; part.chr$right.base/1e6
+## [1] 97.74182
+## [1] 197.2152 ## will affect segs 18-37 (end of chr)
+
+##########
+## Check family info
+##########
+
+# prelim SHAPEIT2 runs said all samples were unrelated, but qc report says there are 30 P-O pairs
+# check PLINK file for family info; compare to annotated father and mother
+
+head(paste(samp.ann$father,samp.ann$mother,sep="_")) # [1] "_" "_" "_" "_" "_" "_"
+
+unique(samp.ann$mother)
+##  [1] ""        "0"       "NA19222" "NA07055" "NA18858" "NA21362" "NA18912"
+##  [8] "NA12145" "NA21363" "NA18505" "NA19137" "NA21308" "NA18508" "NA12239"
+## [15] "NA18502" "NA19093" "NA21303" "NA18861" "NA19102"
+
+# ok, so the fam info isn't here - let's define it from KC files and then check with Cathy and Caitlin
+
+# are family IDs reflecting the discovered structure?
+sum(samp.keep$family==samp.keep$SUBJECT_ID) # 6858
+sum(samp.keep$family!=samp.keep$SUBJECT_ID)  # 0
+
+# i thought they usually defined families unless they can't resolve a pedigree?
+# per data cleaning SOP:"If all of the unexpected relatives are such that a pedigree can be specified unambiguously, then we will provide a pedigree (along with the HapMaps); otherwise, the pedigree file will include only the HapMaps.  We do not want to provide a partial pedigree (i.e. only those that can be specified unambiguously) because users might be misled into thinking those are the only relatives."
+# it's true they found 71 2nd-deg rel pairs, so those pedigrees can't be fully determined
+
+## read in the KC info
+kc <- read.csv(file=paste(dir,"dbGaP/To_dbGaP/Kinship_coefficient_table.csv",sep=""))
+dim(kc); head(kc)
+## [1] 146   7
+##   SAMPID1 SAMPID2   SUBJID1   SUBJID2         IBS0    kinship obs.rel
+## 1  161617  163535 DBG823480 DBG835985 0.0001065439 0.24936576      PO
+## 2  118387  145438 DBG835983 DBG817752 0.0332342063 0.09276588    Deg2
+## 3  102636  180554 DBG827097 DBG804242 0.0142281622 0.23748561      FS
+## 4  118862  159789 DBG825456 DBG834216 0.0001172920 0.24702833      PO
+## 5  139185  159789 DBG815772 DBG834216 0.0320076767 0.10462129    Deg2
+## 6  174451  165823 DBG812633 DBG816337 0.0131557906 0.23382437      FS
+
+table(kc$obs.rel)
+## Deg2   FS   PO 
+##   71   45   30
+
+## need sex and age info to determine which is the parent and which is the child
+
+## get Caitlin's scan annotation and look for age
+scanAnnot <- getobj(paste(dir,"sample_snp_annot/Ambrosone_sample_annot_v32_CPM.RData",sep=""))
+dim(scanAnnot); varLabels(scanAnnot) # there is an age variable
+
+meta <- varMetadata(scanAnnot)
+meta[rownames(meta)=="age",]
+##                       labelDescription annotation analysis
+## age age of study participants in years      FALSE    FALSE
+
+scan.dat <- pData(scanAnnot)
+
+kc$age1 <- scan.dat$age[match(kc$SUBJID1, scan.dat$subjectID)]
+kc$age2 <- scan.dat$age[match(kc$SUBJID2, scan.dat$subjectID)]
+kc$sex1 <- scan.dat$sex[match(kc$SUBJID1, scan.dat$subjectID)]
+kc$sex2 <- scan.dat$sex[match(kc$SUBJID2, scan.dat$subjectID)]
+
+head(kc[,-5])
+##   SAMPID1 SAMPID2   SUBJID1   SUBJID2    kinship obs.rel age1 age2 sex1 sex2
+## 1  161617  163535 DBG823480 DBG835985 0.24936576      PO   46   62    F    F
+## 2  118387  145438 DBG835983 DBG817752 0.09276588    Deg2   59   40    F    F
+## 3  102636  180554 DBG827097 DBG804242 0.23748561      FS   60   63    F    F
+## 4  118862  159789 DBG825456 DBG834216 0.24702833      PO   56   39    F    F
+## 5  139185  159789 DBG815772 DBG834216 0.10462129    Deg2   37   39    F    F
+## 6  174451  165823 DBG812633 DBG816337 0.23382437      FS   45   54    F    F
+
+# reduce to parent-offspring pairs
+po <- kc[kc$obs.rel=="PO",]
+
+# flag where subj1 is older (and therefore obliged to be the parent)
+po$parent1 <- po$age1>po$age2
+
+plot(po$age1[po$parent1], po$age2[po$parent1])
+
+# check the age diff
+po$age.diff <- abs(po$age1-po$age2)
+summary(po$age.diff) # shoot, 5 yrs difference? 
+   ## Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   ## 5.00   17.00   20.50   20.23   22.75   34.00
+
+po[po$age.diff<15,] # kinship coeff ~=0.25, kc0 around 0 (for full sibs, IBS0 would by ~0.25)
+##     SAMPID1 SAMPID2   SUBJID1   SUBJID2         IBS0   kinship obs.rel age1
+## 37   122609  128148 DBG802791 DBG838485 0.0001918159 0.2503920      PO   47
+## 92   137196  162301 DBG835454 DBG819286 0.0001065621 0.2539464      PO   53
+## 116  124050  136930 DBG804822 DBG826887 0.0002770733 0.2476946      PO   48
+##     age
+## 37    42    F    F    TRUE        5
+## 92    48    F    F    TRUE        5
+## 116   57    F    F   FALSE        9
+
+# check that I got the right ages
+po[po$age.diff<15,c(1:4,8,9)]
+##     SAMPID1 SAMPID2   SUBJID1   SUBJID2 age1 age2
+## 37   122609  128148 DBG802791 DBG838485   47   42
+## 92   137196  162301 DBG835454 DBG819286   53   48
+## 116  124050  136930 DBG804822 DBG826887   48   57
+
+scan.dat[is.element(scan.dat$local.scanID,c(122609,128148,137196,162301,124050,136930)),
+         c("subjectID","local.scanID","age","sex")]
+##        subjectID local.scanID age sex
+## 657418 DBG838485       128148  42   F
+## 664714 DBG802791       122609  47   F
+## 736752 DBG819286       162301  48   F
+## 795340 DBG826887       136930  57   F
+## 802889 DBG804822       124050  48   F
+## 939560 DBG835454       137196  53   F ## looks correct
+
+## write out the PO pair csv
+write.csv(po,file=paste(dir, "sarahcn/docs/Kinship_coefficient_table_POpair_withAgeSex.csv",sep=""),
+          row.names=FALSE, quote=FALSE)
+
+# asking Caitlin and Cathy for advice moving forward
+
+# check these are all imputation samples
+table(is.element(po$SUBJID1, samp.keep$SUBJECT_ID)) # T for 30
+table(is.element(po$SUBJID2, samp.keep$SUBJECT_ID)) # T for 30
+
+# resolution from Cathy
+
+## resolution per Cathy, 4/5:
+## Caitlin - On second thought, let's not open a can of worms at this stage in the project.  Let's let it go.
+## Sarah, please go with option (3)
+##       (3)    Not add in any parent info and just rely on SHAPEIT’s 
+## ability to detect long stretches of shared chroms, even when relationships aren’t explicitly stated
+
+### so no update parents list
+
+##########
+## Plots and metrics, chr21 test
+##########
+# 4/9/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+##  pushed chr 21 through imputation to check output metrics
+
+imp_dir <- paste(dir,"imputation/", sep="")
+out_dir <- paste(dir,"sarahcn/plots/", sep="")
+study <- "Ambrosone"
+schr <- 21
+echr <- 21
+
+source("/projects/geneva/geneva_sata/GCC_code/Imputation_IMPUTE2/R_functions/Make_Final_Plots.R")
+make.finalimp.plot(imp_dir, out_dir, project=study, start_chr=schr, end_chr=echr) 
+## Reading in imputation metrics on chroms 21 through 21 ...
+## Reading chrom 21 ...
+## Total of 308175 SNPS and 19357 indels and structural variants...
+## Printing SNP summary by chrom
+## Plots will represent a total of 305628 imputed SNPs and 19357 imputed SVs and indels  
+
+## Summaries of imputed variants passing various 'info' score thresholds:
+## Fraction of SNPs with info > 0.3 is 0.7509 
+## Fraction of SVs and indels with info > 0.3 is 0.8187 
+## Fraction of all imputed variants with info > 0.3 is 0.7549 
+## Fraction of SNPs with info > 0.5 is 0.3202 
+## Fraction of SVs and indels with info > 0.5 is 0.3782 
+## Fraction of all imputed variants with info > 0.5 is 0.3237 
+## Fraction of SNPs with info > 0.8 is 0.0932 
+## Fraction of SVs and indels with info > 0.8 is 0.12 
+## Fraction of all imputed variants with info > 0.8 is 0.0948 
+## making boxplots for snp variants
+## making boxplots for svs_indels variants
+## making boxplots for all variants
+## plotting info by MAF bin for snp variants
+## plotting info by MAF bin for svs_indels variants
+## plotting info by MAF bin for all variants
+##      Total number of masked SNPs will be 2547 ...
+##      There are a total of 0 masked SVs and indels, which will be not be plotted/summarized...
+## Dichotomizing masked SNP metrics by study MAF of  0.05 
+## Summary of concord_type0 
+## >>>>> MAF <  0.05 , mean= 0.9812443 median= 0.993 ...
+## >>>>> MAF >= 0.05 , mean= 0.8576789 median= 0.9605 ...
+## Summary of r2_type0 
+## >>>>> MAF <  0.05 , mean= 0.4619964 median= 0.48 ...
+## >>>>> MAF >=  0.05 , mean= 0.6934147 median= 0.884 ...
+## Count of SNPs w/study MAF <  0.05 :  1105 
+## Count of SNPs w/study MAF >=  0.05 :  1442 
+## Deleting /projects/cidr/Ambrosone/sarahcn/plots/Ambrosone_chr21-21.allelemap.RData 
+
+## the info score profile is concerning. as is the masked SNP strand check plot. there were no (strand unambiguous) SNPs flipped by IMPUTE2, so I don't see how it's an issue of my strand annotation
+
+# read in the metrics and check out some masked SNPs with high info and low concordance
+chr <- 21
+mets <- read.table(gzfile(paste(dir,"imputation/metrics/combined/",study,"_chr",chr,".metrics.gz",sep="")),
+                   header=TRUE)
+dim(mets); head(mets)
+## [1] 327532      9
+##         rs_id position exp_freq_a1  info certainty type info_type0
+## 1 rs191612142  9411243       0.006 0.093     0.989    0         -1
+## 2 rs186126309  9411254       0.006 0.093     0.989    0         -1
+## 3 rs141221894  9411618       0.027 0.169     0.950    0         -1
+## 4 rs146134162  9412099       0.007 0.049     0.986    0         -1
+## 5 rs149437288  9412126       0.123 0.074     0.778    0         -1
+## 6  rs71220884  9412503       0.894 0.062     0.804    0         -1
+##   concord_type0 r2_type0
+## 1            -1       -1
+## 2            -1       -1
+## 3            -1       -1
+## 4            -1       -1
+## 5            -1       -1
+## 6            -1       -1
+
+summary(mets$info[mets$type==0])
+ ##   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ ## 0.0000  0.3030  0.4080  0.4487  0.5560  1.0000
+
+# worth plotting info along the length of the chr?
+
+sum(mets$type==2 & mets$info_type0>0.8 & mets$concord_type0<0.5) # 21
+chk <- mets[mets$type==2 & mets$info_type0>0.8 & mets$concord_type0<0.5,]
+head(chk[,c(1:3,7:9)])
+##                           rs_id position exp_freq_a1 info_type0 concord_type0
+## 18194       Ambrosome_rs1534860 16272091       0.842      0.999         0.267
+## 19028       Ambrosome_rs7282245 16388792       0.935      0.980         0.117
+## 19402       Ambrosome_rs2142221 16443154       0.681      1.000         0.440
+## 19928        Ambrosome_rs961744 16495750       0.816      0.993         0.294
+## 20256 Ambrosome_seq_rs111919489 16526390       0.989      0.953         0.021
+## 20371 Ambrosome_seq_rs138354529 16539973       0.994      0.976         0.012
+##       r2_type0
+## 18194    0.990
+## 19028    0.938
+## 19402    0.999
+## 19928    0.983
+## 20256    0.881
+## 20371    0.943
+
+chk$rs_id # ok, looks like all of these are custom content
+## [1] "Ambrosome_rs1534860"       "Ambrosome_rs7282245"      
+##  [3] "Ambrosome_rs2142221"       "Ambrosome_rs961744"       
+##  [5] "Ambrosome_seq_rs111919489" "Ambrosome_seq_rs138354529"
+##  [7] "Ambrosome_rs2823170"       "Ambrosome_seq_rs115761884"
+##  [9] "Ambrosome_rs8134931"       "Ambrosome_rs9982847"      
+## [11] "Ambrosome_rs9982230"       "Ambrosome_rs1999304"      
+## [13] "Ambrosome_rs2156379"       "Ambrosome_rs8133362"      
+## [15] "Ambrosome_rs8130968"       "Ambrosome_rs2828470"      
+## [17] "Ambrosome_rs8126925"       "Ambrosome_rs78571420"     
+## [19] "Ambrosome_rs2835606"       "Ambrosome_rs79734973"     
+## [21] "Ambrosome_rs6518337"      
+
+# spot check Ambrosome_seq_rs111919489 - is my strand annotation correct?
+# sequence in the design file was
+# AAGCAATATCATCAGCATTAATAGTTAACTATGAGAAATAGAGAAGAATGCAGGATGTAA[C/G]ATAAAGAAAACTTCTTGCTGTGTAGAAGCTTTCTGGGCTAGATGGAAGAGTCTGAAAAAT
+# my blat search det'd this was on the + strand.
+# looking back at custom manifst I'm not sure if the "[C/G]" part, that allele A is first and allele B is second?
+
+fn.in <- paste(dir,"ambrosone_CIDR/SNP_Information/Final_012513_rga/Final_012513_rga.csv",sep="")
+colsUse <- c(1:6,8,12,13,15,17,19)
+cols <- rep('NULL', 45)
+cols[colsUse] <- NA
+cstm <- read.csv(fn.in, colClasses=cols)
+Sequence.des <- cstm$Sequence
+seq1 <- strsplit(Sequence.des, "[", fixed=TRUE) # returns a list
+seq1[[1]]
+## [1] "AACTAGTAGCTAGAAATCTTTTGTTCCACAATGAAAAGTGGGAGAAGGACCCCTGATTTT"    
+## [2] "C/G]TTTCTCTGCTTCAAATGTAGGCATGCTTTGTGACTTTACACTGCAGAGCCTCCTGGGATT"
+seq2 <- sapply(seq1, "[[", 2)
+length(seq2)
+# [1] 187365
+head(seq2)
+## [1] "C/G]TTTCTCTGCTTCAAATGTAGGCATGCTTTGTGACTTTACACTGCAGAGCCTCCTGGGATT"
+## [2] "A/G]CAGTGCTCTGCACATGGTCAGCATTCATACAAACACATGTGATTATATTTCTGAGCTGGA"
+## [3] "A/G]gcaaaggcagtggcccagccaactagggaacccatgaaaactctgcctgctcaaggttgt"
+## [4] "A/G]TGGGGAGGTTTTCTCCAACCCCCGGCCGTGGCAGCGAGTCAGTGTGCCTTTAATCAACGG"
+## [5] "A/C]CCCTGCCTGGCTGGTCACGTGGGTGTGAGGAGGCACAGGGTACTGGGTAGATATTACCAC"
+## [6] "A/G]AGATGGCCAGAGGGTCGGGTGAGCAGAGCGGTGAGCCTCCAACCCTCTCTGCCACTCCAG"
+seq3 <- strsplit(seq2, "]", fixed=TRUE)
+length(seq3)
+# [1] 187365
+seq3[[1]]
+## [1] "C/G"                                                         
+## [2] "TTTCTCTGCTTCAAATGTAGGCATGCTTTGTGACTTTACACTGCAGAGCCTCCTGGGATT"
+seq4 <-  sapply(seq3, "[[", 1)
+length(seq4); head(seq4)
+## [1] 187365
+## [1] "C/G" "A/G" "A/G" "A/G" "A/C" "A/G"
+head(seq4)
+# [1] "C/G" "A/G" "A/G" "A/G" "A/C" "A/G"
+
+table(seq4[nchar(seq4)==3])
+  ## -/A   A/C   A/G   A/T   -/C   C/G   -/G   -/T   T/C   T/G 
+  ##   8 16484 70971  5175     8  7460     7     2 70873 16367
+
+# there are no "T/A" or "G/C" - asking Jane about this.
+# What if we excluded strand ambiguous custom content SNPs from imputation? That would only loose
+5175+7460 # ~12K total SNPs
+
+((5175+7460)/369407)*100
+## that's ~ 3.4% of total SNPs from current imputation snp.qualfilter.txt (369407)
+
+# per Jane, look at the validation status of these SNPs
+names(cstm)
+table(cstm$Validation_Bin, exclude=NULL)
+       ## HapMap_OneKGenomeValidated                   HapMapValidated 
+       ##                       8997                              1915 
+       ##          InfiniumValidated                      NonValidated 
+       ##                      44064                              8947 
+       ##        OneKGenomeValidated TwoHit_HapMap_OneKGenomeValidated 
+       ##                      52037                             16681 
+       ##     TwoHit_HapMapValidated        TwoHit_OneKGenomeValidated 
+       ##                       1010                             17078 
+       ##            TwoHitValidated                           Unknown 
+       ##                       1216                             35420 
+       ##                       <NA>
+
+# check the validation bin for these 21 SNPs
+id1 <- gsub("Ambrosome_","",chk$rs_id)
+id2 <- gsub("seq_","",id1)
+id2
+## [1] "rs1534860"   "rs7282245"   "rs2142221"   "rs961744"    "rs111919489"
+##  [6] "rs138354529" "rs2823170"   "rs115761884" "rs8134931"   "rs9982847"  
+## [11] "rs9982230"   "rs1999304"   "rs2156379"   "rs8133362"   "rs8130968"  
+## [16] "rs2828470"   "rs8126925"   "rs78571420"  "rs2835606"   "rs79734973" 
+## [21] "rs6518337"
+
+table(cstm$Validation_Bin[is.element(cstm$Locus_Name, id2)])
+##      HapMap_OneKGenomeValidated                   HapMapValidated 
+##                                 1                                 1 
+##                 InfiniumValidated               OneKGenomeValidated 
+##                                 1                                 6 
+## TwoHit_HapMap_OneKGenomeValidated        TwoHit_OneKGenomeValidated 
+##                                 5                                 4
+
+## 4/11/2014 - further follow-up with Hua and Jane
+## Hua agrees there is discrepant annotation
+
+##########
+## Write out revised flip list
+##########
+# 4/11/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# use re-worked allele mappings (see ./Ambrosone_allele_mapping.R) to make revised fliplist
+# run through chr21 pre-phasing and imputation again to see if it helps overall imputation quality and the masked SNP check strand plot
+
+# read in revised allele mappings file
+alle.map <- read.csv(file=paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_alleleMappings_20140411.csv", sep=""))
+
+dim(alle.map); head(alle.map)
+## [1] 811110      5
+##                      snp alle.AB alle.design alle.top alle.plus
+## 1 Ambrosome_10_123219423       A           T        A         T
+## 2 Ambrosome_10_123219423       B           G        C         G
+## 3 Ambrosome_10_123219462       A           T        A         T
+## 4 Ambrosome_10_123219462       B           G        C         G
+## 5 Ambrosome_10_123219543       A           A        A         T
+## 6 Ambrosome_10_123219543       B           G        G         C
+
+# check if any SNPs missing plus strand info are in the SNP keep list
+# Plus strand mappings were ultimately unattainable for 13 SNPs (strand ambiguous) and 28 insertion/deletion variants
+snp.keep <- read.table(file=paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""),
+                       col.names=c("rsID","chrom"))
+table(is.element(snp.keep$rsID, alle.map$snp)) ## all T
+
+table(alle.map$alle.plus, exclude=NULL) ## 82 NA's
+(28+13)*2 # 82
+
+table(is.element(snp.keep$rsID, alle.map$snp[is.na(alle.map$alle.plus)])) # 369407 F
+
+# flip where TOP alleles are not plus alleles
+amap <- alle.map
+alleA <- amap[amap$alle.AB=="A",]
+flip.idx <- alleA$alle.top!=alleA$alle.plus
+head(alleA[flip.idx,])
+##                      snp alle.AB alle.design alle.top alle.plus
+## 1  Ambrosome_10_123219423       A           T        A         T
+## 3  Ambrosome_10_123219462       A           T        A         T
+## 5  Ambrosome_10_123219543       A           A        A         T
+## 11 Ambrosome_10_123220581       A           T        A         T
+## 13 Ambrosome_10_123247534       A           T        A         T
+## 17 Ambrosome_10_123263313       A           A        A         T
+
+with(alleA[flip.idx,],table(alle.top, alle.plus))
+##         alle.plus
+## alle.top      G      T
+##        A      0 188154
+##        C  13102      0
+
+with(alleA[!flip.idx,],table(alle.top, alle.plus))
+##         alle.plus
+## alle.top      A      C      D      I
+##        A 190850      0      0      0
+##        C      0  13269      0      0
+##        D      0      0     71      0
+##        I      0      0      0     68
+
+flip.all <- alleA$snp[flip.idx]
+length(flip.all); head(flip.all)
+## [1] 201297
+## [1] "Ambrosome_10_123219423" "Ambrosome_10_123219462" "Ambrosome_10_123219543"
+## [4] "Ambrosome_10_123220581" "Ambrosome_10_123247534" "Ambrosome_10_123263313"
+
+# restrict to imputation basis (composite filter passing, chrs 1-22, X, non missing position)
+flip.qual <- flip.all[is.element(flip.all, snp.keep$rsID)]
+length(flip.qual) # [1] 183254
+
+# compare to original flip list
+flip.orig <- read.table(file=paste(dir,"imputation/keeplists/fliplist.txt",sep=""),col.names="rsID")
+length(setdiff(flip.orig$rsID, flip.qual)) # 180 I was flipping before but not now
+length(setdiff(flip.qual,flip.orig$rsID)) # 3849 I'm flipping now but not before -- that's alot
+
+# write the new list out to test directory location
+write.table(flip.qual, file=paste(dir,"imputation/test_new_allelemap/keeplists/fliplist.txt",sep=""),
+            col.names=F,row.names=F, quote=F,eol = "\n")
+
+##########
+## Plots and metrics, chr21 test, post revised flip list
+##########
+# 4/12/2014
+
+# redid prephasing and imputation with revised flip list, chr21 only
+# will remake plots and metrics summaries
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+imp_dir <- paste(dir,"imputation/test_new_allelemap/", sep="")
+out_dir <- paste(imp_dir,"plots/", sep="") # keep plots in analysis directory
+study <- "Ambrosone"
+schr <- 21
+echr <- 21
+
+source("/projects/geneva/geneva_sata/GCC_code/Imputation_IMPUTE2/R_functions/Make_Final_Plots.R")
+
+make.finalimp.plot(imp_dir, out_dir, project=study, start_chr=schr, end_chr=echr) 
+## Reading in imputation metrics on chroms 21 through 21 ...
+## Reading chrom 21 ...
+## Total of 308175 SNPS and 19357 indels and structural variants...
+## Printing SNP summary by chrom
+## Plots will represent a total of 305628 imputed SNPs and 19357 imputed SVs and indels  
+
+## Summaries of imputed variants passing various 'info' score thresholds:
+## Fraction of SNPs with info > 0.3 is 0.8032 
+## Fraction of SVs and indels with info > 0.3 is 0.8567 
+## Fraction of all imputed variants with info > 0.3 is 0.8064 
+## Fraction of SNPs with info > 0.5 is 0.3571 
+## Fraction of SVs and indels with info > 0.5 is 0.4128 
+## Fraction of all imputed variants with info > 0.5 is 0.3604 
+## Fraction of SNPs with info > 0.8 is 0.0996 
+## Fraction of SVs and indels with info > 0.8 is 0.1252 
+## Fraction of all imputed variants with info > 0.8 is 0.1011 
+## making boxplots for snp variants
+## making boxplots for svs_indels variants
+## making boxplots for all variants
+## plotting info by MAF bin for snp variants
+## plotting info by MAF bin for svs_indels variants
+## plotting info by MAF bin for all variants
+##      Total number of masked SNPs will be 2547 ...
+##      There are a total of 0 masked SVs and indels, which will be not be plotted/summarized...
+## Dichotomizing masked SNP metrics by study MAF of  0.05 
+## Summary of concord_type0 
+## >>>>> MAF <  0.05 , mean= 0.9854652 median= 0.994 ...
+## >>>>> MAF >= 0.05 , mean= 0.8803495 median= 0.966 ...
+## Summary of r2_type0 
+## >>>>> MAF <  0.05 , mean= 0.4703222 median= 0.493 ...
+## >>>>> MAF >=  0.05 , mean= 0.7133003 median= 0.897 ...
+## Count of SNPs w/study MAF <  0.05 :  1105 
+## Count of SNPs w/study MAF >=  0.05 :  1442 
+## Deleting /projects/cidr/Ambrosone/imputation/test_new_allelemap/plots/Ambrosone_chr21-21.allelemap.RData 
+
+## the quality summaries are also a bit higher than with initial allele mappings (i.e. 80% of all imputed passing info of 0.3 vs only 75%
+
+
+## looks like revised allele mapping is correct - but as add'l sanity check, compare allele mapping file for the chr21 SNPs that apparently looked to be strand misaligned in initial masked SNP check
+chr <- 21
+mets <- read.table(gzfile(paste(dir,"imputation/metrics/combined/",study,"_chr",chr,".metrics.gz",sep="")),
+                   header=TRUE)
+dim(mets); head(mets)
+chk <- mets[mets$type==2 & mets$info_type0>0.8 & mets$concord_type0<0.5,]
+dim(chk) # 21 9
+
+amap.v0 <-  read.csv(paste(dir,"dbGaP/To_dbGaP/SNP_allelemap.csv",sep=""))
+
+head(amap.v0[is.element(amap.v0$snp, mets$rs_id),])
+##               snp alle.AB alle.design alle.top alle.plus
+## 273 exm-rs1000005       A           C        C         G
+## 274 exm-rs1000005       B           G        G         C
+## 275 exm-rs1000026       A           A        A         T
+## 276 exm-rs1000026       B           G        G         C
+## 319 exm-rs1003719       A           A        A         A
+## 320 exm-rs1003719       B           G        G         G
+
+amap.v1 <-  read.csv(file=paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_alleleMappings_20140411.csv", sep=""))
+
+head(amap.v1[is.element(amap.v1$snp, mets$rs_id),])
+##                      snp alle.AB alle.design alle.top alle.plus
+## 1941 Ambrosome_rs1000051       A           A        A         T
+## 1942 Ambrosome_rs1000051       B           C        C         G
+## 2287 Ambrosome_rs1002458       A           T        A         T
+## 2288 Ambrosome_rs1002458       B           G        C         G
+## 2289 Ambrosome_rs1002459       A           G        C         G
+## 2290 Ambrosome_rs1002459       B           C        G         C
+
+names(amap.v1) <- paste(names(amap.v1),"new",sep=".")
+
+# merge the df's to compare for these 21 SNPs
+amap.comb <- merge(amap.v0[is.element(amap.v0$snp, chk$rs_id),], amap.v1,
+                   by.x=c("snp","alle.AB"),
+                   by.y=c("snp.new","alle.AB.new"), all.x=TRUE, all.y=FALSE, sort=FALSE)
+dim(amap.comb) # 42 8
+
+# check that design alleles match
+table(amap.comb$alle.design==amap.comb$alle.design.new) # T for 42
+
+# check that TOP alleles match
+table(amap.comb$alle.top==amap.comb$alle.top.new) # T for 42
+
+# look at plus alleles - would expect them to be different
+table(amap.comb$alle.plus==amap.comb$alle.plus.new)
+## FALSE  TRUE 
+##    38     4 ## mostly not matching (2 match)
+
+plus.match <- unique(amap.comb$snp[amap.comb$alle.plus==amap.comb$alle.plus.new])
+plus.match # [1] "Ambrosome_rs8133362" "Ambrosome_rs9982230"
+
+chk[is.element(chk$rs_id, plus.match),]
+##                     rs_id position exp_freq_a1 info certainty type info_type0
+## 84296 Ambrosome_rs9982230 22929171       0.181    1         1    2      0.860
+## 94132 Ambrosome_rs8133362 23910813       0.239    1         1    2      0.816
+##       concord_type0 r2_type0
+## 84296         0.286    0.872
+## 94132         0.367    0.068 # hard to say why these fit the strand mismatch profile for masked SNP metrics - perhaps due to reduced imputation quality overall...?
+
+## look at at the TOP/BOT status of Sequence.des
+comb.cstm <- read.table(gzfile(paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz", sep="")), header=TRUE)
+ ## [1] "Name.match"               "Name"                    
+##  [3] "Ch"                       "Position"                
+##  [5] "SNP"                      "Plus.Minus.Strand"       
+##  [7] "ILMN.Strand"              "Customer.Strand"         
+##  [9] "exome.std"                "map"                     
+## [11] "int.id"                   "Locus_Name.des"          
+## [13] "Sequence.des"             "Genome_Build_Version.des"
+## [15] "Chromosome.des"           "Coordinate.des"          
+## [17] "Source.des"               "Sequence_Orientation.des"
+## [19] "Ilmn_Id.des"              "Bead_Types.Assay.des"    
+## [21] "Assay_Type.des"           "Coordinate.int.des"      
+## [23] "map.des"                  "Sequence.des.SNP"        
+## [25] "strand.amb"               "myIlmnStrand"            
+## [27] "myIlmnStrand.nPair"
+
+
+# spot check 1 SNP
+chk$rs_id[1] # [1] "Ambrosome_rs1534860"
+
+amap.comb[amap.comb$snp==chk$rs_id[1],]
+ ##                  snp alle.AB alle.design alle.top alle.plus alle.design.new
+## 1 Ambrosome_rs1534860       A           T        A         A               T
+## 2 Ambrosome_rs1534860       B           A        T         T               A
+##   alle.top.new alle.plus.new
+## 1            A             T
+## 2            T             A
+
+comb.cstm[comb.cstm$Name==chk$rs_id[1],]
+##                Name.match                Name Ch Position   SNP
+## 29185 Ambrosome_rs1534860 Ambrosome_rs1534860 21 16272091 [T/A]
+##       Plus.Minus.Strand ILMN.Strand Customer.Strand exome.std         map
+## 29185               BOT         BOT             BOT     FALSE 21.16272091
+##       int.id Locus_Name.des
+## 29185  29185      rs1534860
+##                                                                                                                        Sequence.des
+## 29185 TGTCCCTGTACCAGTAACACATGCTGCCAAAGTTCTAGGGCTTCAATCATGataataaaa[A/T]ttaataaaaaattGAGCATCCCAGAGCAACACAGATAGTTTTATGAGGGAGACACAGGGC
+##       Genome_Build_Version.des Chromosome.des Coordinate.des Source.des
+## 29185                     37.1             21       16272091      dbsnp
+##       Sequence_Orientation.des                  Ilmn_Id.des
+## 29185                  FORWARD rs1534860-131_B_F_2091096317
+##       Bead_Types.Assay.des Assay_Type.des Coordinate.int.des     map.des
+## 29185                    2      InfiniumI           16272091 21.16272091
+##       Sequence.des.SNP strand.amb myIlmnStrand myIlmnStrand.nPair
+## 29185            [A/T]       TRUE          BOT                 10
+
+# rigth, T/A are design alleles which makes design strand (ILMN.Strand) BOT. Sequence.des strand is also BOT. I don't have the BLAT results in this df.
+
+system("grep Ambrosome_rs1534860 /projects/cidr/Ambrosone/sarahcn/alleleMappings/*BLAT*txt")
+## /projects/cidr/Ambrosone/sarahcn/alleleMappings/Ambrosone_15041407_customExomeVariants_set1BLATmatches.txt:Ambrosome_rs1534860 21 29185 TGTCCCTGTACCAGTAACACATGCTGCCAAAGTTCTAGGGCTTCAATCATGataataaaa[A/T]ttaataaaaaattGAGCATCCCAGAGCAACACAGATAGTTTTATGAGGGAGACACAGGGC 16272091 [A/T] 121 0 0 0 1 1 0 0 + 122 0 122 chr21 48129895 16272030 16272151 2 63,58, 0,64, 16272030,16272093, 120 99.2 275194 TRUE 
+
+# Sequence.des is + strand and BOT. So alle.plus.new and alle.top.new are rev complements. Whereas initially, I saw that SNP in Sequence.des is A/T and said - oh, that's the opp strand as design alleles T/A
+
+
+##########
+## Determine chrX imputation target
+##########
+## 4/18/2014
+
+## current variant count from legend file includes the XTR region, which we're now bypassing with the segmentation sscheme
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+
+kgdir <- "/projects/geneva/gcc-fs2/Imputation/reference/1000Genomes/20101123/IMPUTE/ALL_1000G_phase1integrated_SHAPEIT2_impute/"
+chr <- 23
+
+## read in chrX legend file
+leg <- read.table(gzfile(paste(kgdir,"/legend_files_alternate_selection/ALL.chr",chr,".integrated_phase1_v3.20101123.snps_indels_svs.genotypes.nosing.legend.gz",sep="")),header=T)
+dim(leg); names(leg)
+## [1] 1250218      16
+##  [1] "id"                      "position"               
+##  [3] "a0"                      "a1"                     
+##  [5] "afr.aaf"                 "amr.aaf"                
+##  [7] "asn.aaf"                 "eur.aaf"                
+##  [9] "afr.maf"                 "amr.maf"                
+## [11] "asn.maf"                 "eur.maf"                
+## [13] "ma.cnt.gte4.allpanels"   "ma.cnt.gte2.allpanels"  
+## [15] "ma.cnt.gte2.afr.eur"     "ma.cnt.gte2.afr.amr.eur"
+
+# sanity check on variant names
+sum(leg$id==".") # 0
+
+## flag xtr segment
+xtr <- leg$position>88395000 & leg$position<92583000
+table(xtr)
+## xtr
+##   FALSE    TRUE 
+## 1217170   33048
+ 
+sum(leg$ma.cnt.gte2.afr.eur==1)
+# [1] 822725 ## currrent count of imputation target
+
+sum(leg$ma.cnt.gte2.afr.eur==1 & !xtr)
+# [1] 797138 -- excludes XTR
+
+##########
+## Investigate imp quality over a chrom
+##########
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# first imputation we've done from a (primarily) exome-only basis. take a chrom and plot info against length. color code points by MAF (<1%, 1-5%, >5%)
+
+chr <- 2
+nseg <- 47
+nvars <- 2009999
+  
+# loop through metrics files
+mets.all <- data.frame(matrix(NA, nrow=nvars, ncol=6)) # empty data frame to collect all segs
+var.cur <- 1
+for (s in 1:nseg){
+  cat("Segment",s,"\n")
+  fn <- paste(dir,"imputation/metrics/Ambrosone_chr",chr,".set",s,".metrics",sep="")
+  mets <- read.table(fn, header=TRUE)
+
+  end.row <- var.cur+nrow(mets)-1
+  
+  ## add to data frame - keep just name, position, type, info, exp_freq_a1
+  mets.all[var.cur:end.row,1:5] <- mets[,c(2:5,7)]
+  mets.all[var.cur:end.row,6] <- s
+  
+  var.cur <- var.cur+nrow(mets)
+}
+
+names(mets.all) <- c("rs_id","position","exp_freq_a1","info","type","segment")
+
+## that is way quicker than rbind - would be good to use this empty data frame method for the plotting R script! (requires knowing variant dimension in advance)
+
+table(mets.all$segment)
+
+# color code by MAF
+mets.comp <- mets.all
+mets.comp$maf <- ifelse(mets.comp$exp_freq_a1>0.5, 1-mets.comp$exp_freq_a1, mets.comp$exp_freq_a1)
+
+mets.comp$maf.group <- NA
+mets.comp$maf.group[mets.comp$maf<=0.01] <- "<=1%"
+mets.comp$maf.group[mets.comp$maf>0.01 & mets.comp$maf<=0.05] <- "1-5%"
+mets.comp$maf.group[mets.comp$maf>0.05] <- ">5%"
+
+summary(mets.comp$maf[mets.comp$maf.group=="<=1%"])
+summary(mets.comp$maf[mets.comp$maf.group=="1-5%"])
+summary(mets.comp$maf[mets.comp$maf.group==">5%"])
+
+png.fn <- paste(dir, "sarahcn/plots/chr2_info_by_position.png",sep="")
+png(png.fn)
+library(ggplot2)
+ggplot(mets.comp[mets.comp$type==0,],
+       aes(x=position,y=info, color=maf.group)) + geom_point(shape=".")
+dev.off() ## really no apparent gaps, at least at this scale
+
+# read in segment info and plot type 2 density agst median info score
+kgdir <- "/projects/geneva/gcc-fs2/Imputation/reference/1000Genomes/20101123/"
+segs <- read.csv(file=paste(kgdir, "IMPUTE/ALL_1000G_phase1integrated_SHAPEIT2_impute/segments/Allchrs_analysis_chunks_5MB.csv",sep=""))
+dim(segs); head(segs)
+
+i <- 2
+dat <- segs[segs$chrom==i,]
+snps <- mets.comp[mets.comp$type==2,]
+
+densities <- NULL
+mdn.infos <- NULL
+for (s in 1:max(dat$segment)) {
+
+    segsnps <- snps$position>=dat$bp.start[dat$segment==s] & snps$position<=dat$bp.end[dat$segment==s]
+  
+    ## capture the density of imputation basis (type 2) SNPs - # SNPs per MB
+    density <- sum(segsnps)/((dat$bp.end[dat$segment==s]-dat$bp.start[dat$segment==s])/1e6)
+    densities <- c(densities, density)
+
+    ## calculate median info score for imputed SNPs in this segment
+    mdn.info <- median(mets.comp[mets.comp$position>=dat$bp.start[dat$segment==s] &
+                          mets.comp$position<=dat$bp.end[dat$segment==s] & mets.comp$type==0, "info"], na.rm=TRUE)
+    mdn.infos <- c(mdn.infos, mdn.info)
+}
+
+length(densities) # 47
+summary(densities)
+  ##  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  ## 18.60   30.30   46.80   75.97   85.80  446.40
+
+length(mdn.infos) # 47
+summary(mdn.infos)
+ ##   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ ## 0.3620  0.4660  0.5000  0.5189  0.5735  0.7140
+
+plot(densities, mdn.infos) # at low density (<100 type 2 SNPs/MB) we have a range of median info scores, so it doesn't seem to matter too much at the low density range. but higher density ranges have higher median info scores
+
+cor(densities, mdn.infos) # 0.4969
+
+##########
+## Final plots and metrics
+##########
+
+## running in batch, see ./run_finalPlotsMetrics.R
+
+## inserted log file from ./run_finalPlotsMetrics_v1.out
+## Reading in imputation metrics on chroms 1 through 23 ...
+## Reading chrom 1 ...
+## Reading chrom 2 ...
+## Reading chrom 3 ...
+## Reading chrom 4 ...
+## Reading chrom 5 ...
+## Reading chrom 6 ...
+## Reading chrom 7 ...
+## Reading chrom 8 ...
+## Reading chrom 9 ...
+## Reading chrom 10 ...
+## Reading chrom 11 ...
+## Reading chrom 12 ...
+## Reading chrom 13 ...
+## Reading chrom 14 ...
+## Reading chrom 15 ...
+## Reading chrom 16 ...
+## Reading chrom 17 ...
+## Reading chrom 18 ...
+## Reading chrom 19 ...
+## Reading chrom 20 ...
+## Reading chrom 21 ...
+## Reading chrom 22 ...
+## Reading chrom 23 ...
+## Total of 23040968 SNPS and 1373259 indels and structural variants...
+## Printing SNP summary by chrom
+## Plots will represent a total of 22824712 imputed SNPs and 1373259 imputed SVs and indels
+
+## Summaries of imputed variants passing various 'info' score thresholds:
+## Fraction of SNPs with info > 0.3 is 0.8438
+## Fraction of SVs and indels with info > 0.3 is 0.9006
+## Fraction of all imputed variants with info > 0.3 is 0.847
+## Fraction of SNPs with info > 0.5 is 0.4821
+## Fraction of SVs and indels with info > 0.5 is 0.5575
+## Fraction of all imputed variants with info > 0.5 is 0.4864
+## Fraction of SNPs with info > 0.8 is 0.1577
+## Fraction of SVs and indels with info > 0.8 is 0.1975
+## Fraction of all imputed variants with info > 0.8 is 0.1599
+## making boxplots for snp variants
+## making boxplots for svs_indels variants
+## making boxplots for all variants
+## plotting info by MAF bin for snp variants
+## plotting info by MAF bin for svs_indels variants
+## plotting info by MAF bin for all variants
+##      Total number of masked SNPs will be 216256 ...
+##      There are a total of 0 masked SVs and indels, which will be not be plotted/summarized...
+## Dichotomizing masked SNP metrics by study MAF of  0.05
+## Summary of concord_type0
+## >>>>> MAF <  0.05 , mean= 0.9877323 median= 0.995 ...
+## >>>>> MAF >= 0.05 , mean= 0.9170521 median= 0.976 ...
+## Summary of r2_type0
+## >>>>> MAF <  0.05 , mean= 0.4981907 median= 0.528 ...
+## >>>>> MAF >=  0.05 , mean= 0.7976319 median= 0.933 ...
+## Count of SNPs w/study MAF <  0.05 :  83910
+## Count of SNPs w/study MAF >=  0.05 :  132346
+## Deleting /projects/cidr/Ambrosone/sarahcn/plots/Ambrosone_chr1-23.allelemap.RData
+
+##########
+## Check imputation basis density, by segment, redo
+##########
+# 4/21/2014
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+
+# initial density check was done before the XTR segment shift on chrX
+
+## read in segmentation scheme
+kgdir <- "/projects/geneva/gcc-fs2/Imputation/reference/1000Genomes/20101123/"
+segs <- read.csv(file=paste(kgdir, "IMPUTE/ALL_1000G_phase1integrated_SHAPEIT2_impute/segments/Allchrs_analysis_chunks_5MB.csv",sep=""))
+dim(segs); head(segs)
+## [1] 545   6
+##   chrom segment mb.start mb.end bp.start   bp.end
+## 1     1       1        0      5        1  5000000
+## 2     1       2        5     10  5000001 10000000
+## 3     1       3       10     15 10000001 15000000
+## 4     1       4       15     20 15000001 20000000
+## 5     1       5       20     25 20000001 25000000
+## 6     1       6       25     30 25000001 30000000
+
+table(table(segs$chrom))
+ ## 7 11 14 15 16 17 19 22 24 25 26 27 30 32 35 36 37 45 47 
+ ## 2  2  1  2  1  1  1  1  1  1  1  2  1  1  1  1  1  1  1
+
+# get study keeplist
+snp.keep <- read.table(file=paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""))
+                       
+dim(snp.keep); head(snp.keep)
+## [1] 369407      2
+##           V1 V2
+## 1 exm2268640  1
+## 2      exm41  1
+## 3      exm44  1
+## 4      exm47  1
+## 5      exm53  1
+## 6      exm55  1
+
+## need to get SNP position
+snp.ann <-  read.csv(file=paste(dir,"dbGaP/To_dbGaP/SNP_annotation.csv",sep=""))
+dim(snp.ann); names(snp.ann)
+
+study <- snp.ann[is.element(snp.ann$rsID, snp.keep$V1),
+                 c("rsID","position","chrom")]
+
+# get numeric chrom
+study$chrom.char <- study$chrom
+study$chrom <- ifelse(study$chrom.char=="X", 23, as.numeric(study$chrom.char))
+
+## loop through chrs
+short.obssegs <- NULL
+densities <- NULL
+numsnps <- NULL
+
+## print output to file
+sink(file=paste(dir,"sarahcn/docs/Exome+AmbrosoneCustom_impute2seg_density_v1.txt",sep=""))
+for (i in 1:23){
+#for (i in 1:2){
+  dat <- segs[segs$chrom==i,]
+
+  snps <- study[study$chrom==i,]
+  ## loop through segments
+  cat(paste("Chrom:",i,sep=" "),"\n")
+  for (s in 1:max(dat$segment)){
+    segsnps <- snps$position>=dat$bp.start[dat$segment==s] & snps$position<=dat$bp.end[dat$segment==s]
+    cat(paste("    segment", s,"has", sum(segsnps), "type 2 SNPs",sep=" "),"\n")
+
+    if(sum(segsnps)<100)
+    {cat("Yikes! Very Few SNPs","\n"); id <- paste(i,s,sum(segsnps),sep="."); short.obssegs <- c(short.obssegs, id)}
+    ## collect a vector of these SNP ids
+
+    ## capture the density of imputation basis (type 2) SNPs - # SNPs per MB
+
+    density <- sum(segsnps)/((dat$bp.end[dat$segment==s]-dat$bp.start[dat$segment==s])/1e6)
+    densities <- c(densities, density)
+    numsnps <- c(numsnps, sum(segsnps))
+    
+   } ## close segment loop
+} ## close chrom loop
+
+sink(file=NULL)
+
+summary(numsnps)
+  ## Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  ##  53.0   297.0   514.0   677.8   846.0  3834.0
+
+short.obssegs
+##  [1] "1.34.87"  "4.7.63"   "4.25.73"  "5.5.54"   "5.6.58"   "13.8.54" 
+##  [7] "13.10.58" "13.14.88" "13.15.94" "14.2.65"  "16.10.53" "18.7.95" 
+## [13] "23.16.64" "23.20.96" "23.26.63"
+
+length(short.obssegs) # 15 segs with <100 SNPs
+
+
+##########
+## Summarize imp quality over exomes
+##########
+# 4/25/2014
+
+## expirement with how to get exome regions - use UCSC Table Browser, RefSeq track
+
+rm(list=objects())
+options(stringsAsFactors = FALSE)
+dir <- "/projects/cidr/Ambrosone/"
+library("GWASTools") 
+sessionInfo()$otherPkgs$GWASTools$Version # 1.11.5
+
+## I’m processing the imputed results and  as we might have expected - the genome-wide averages of imputation quality are lower than we normally see (and recall this is our first imputation from an exome array basis). Cathy and I had the idea of summarizing quality metrics only across the exome, as presumably this is the subset of the genome we’d expect to be imputed well (or better than non-exomic), given the Exome+custom array imputation basis.
+
+########## 1) identify custom SNPs
+## per Kathy Lunetta - also include +/- 60kb of custom SNPs, some of which were chosen to tag regions (nut just exomes)
+## identify custom SNPs - try Caitlin's SNP annotation
+snpfile <- paste(dir, "sample_snp_annot/Ambrosone_15041407_v09_CPM.RData",sep="")
+snpAnnot <- getobj(snpfile)
+varLabels(snpAnnot) ## don't see variable to distinguish custom from standard exome SNPs
+
+# i figured it out for allele mapping - use that info
+cstm <- read.table(gzfile(paste(dir, "sarahcn/alleleMappings/20140411_check/Ambrosone_15041407_customExomeVariants_designManifestMerge.txt.gz",sep="")), header=T)
+dim(cstm) # [1] 159036     27
+
+## reduce to just name, chr, bp and build
+cstm.snps <- cstm[,c("Name","Name.match","Ch","Position","Genome_Build_Version.des")]
+table(cstm.snps[,5])
+  ## 36.1     37   37.1 
+  ##  552  29410 129074
+
+## 552 are build 36 - check if any of these are in keeplist - per data cleaning SOP, would expect these to get missing chrom and position
+
+snp.keep <- read.table(paste(dir,"imputation/keeplists/snp.qualfilter.txt",sep=""), col.names=c("snp","chr"))
+table(is.element(snp.keep$snp, cstm.snps$Name.match))
+##  FALSE   TRUE 
+## 231546 137861
+
+table(is.element(snp.keep$snp, cstm.snps$Name))
+##  FALSE   TRUE 
+## 231545 137862
+
+## "Name.match" must have been to align with the design manifest
+
+cstm.snps$imp.keeplist <- is.element(cstm.snps$Name, snp.keep$snp)
+table(cstm.snps[cstm.snps$imp.keeplist,5])
+  ## 36.1     37   37.1 
+  ##  308  23044 114510 ## ok, so doesn't look like Caitlin set pos to 0 - checked her qc script and didn't see build conversion step
+
+# spot check one position
+head(cstm.snps[cstm.snps$imp.keeplist & cstm.snps$Genome_Build_Version.des=="36.1",2:4])
+##                       Name.match Ch  Position
+## 130044  Ambrosome_seq_rs10873531 14 102568296
+## 130098 Ambrosome_seq_rs111275628  4 123800048
+## 130185 Ambrosome_seq_rs111357829 16   3940836
+## 130216 Ambrosome_seq_rs111377122 17  43826666
+## 130264 Ambrosome_seq_rs111426194 17  43802506
+## 130306 Ambrosome_seq_rs111459444 17  43778768
+
+head(cstm.snps[cstm.snps$imp.keeplist & cstm.snps$Genome_Build_Version.des=="36.1" & cstm.snps$Ch==17,1])
+
+## check my imputation basis bim file
+system("egrep 'Ambrosome_seq_rs111377122|Ambrosome_seq_rs111426194|Ambrosome_seq_rs111459444' /projects/cidr/Ambrosone/imputation/plinkfiles/Ambrosone_chr17.bim")
+## 17	Ambrosome_seq_rs111459444	0	43778768	T	C
+## 17	Ambrosome_seq_rs111426194	0	43802506	A	G
+## 17	Ambrosome_seq_rs111377122	0	43826666	C	T
+
+## ok, so I did lose some possible imputation basis SNPs because of build!=37.
+
+########## 2) load segment definitions
+kgdir <- "/projects/geneva/gcc-fs2/Imputation/reference/1000Genomes/20101123/"
+segs <- read.csv(file=paste(kgdir, "IMPUTE/ALL_1000G_phase1integrated_SHAPEIT2_impute/segments/Allchrs_analysis_chunks_5MB.csv",sep=""))
+
+## for table query, need "chrX" column
+chr.char <- ifelse(segs$chrom!=23, segs$chrom, "X")
+unique(paste(chr.char, segs$chrom))
+##  [1] "1 1"   "2 2"   "3 3"   "4 4"   "5 5"   "6 6"   "7 7"   "8 8"   "9 9"  
+## [10] "10 10" "11 11" "12 12" "13 13" "14 14" "15 15" "16 16" "17 17" "18 18"
+## [19] "19 19" "20 20" "21 21" "22 22" "X 23" 
+
+segs$chrom.ucsc <- paste("chr",chr.char, sep="")
+
+## see how it might work to get exome regions within the first chr1 segment
+c <- 1
+s <- 1
+
+########## 3) read in segment metrics
+study <- "Ambrosone"
+chr <- c
+mets.fn <- paste(dir,"imputation/metrics/",study,"_chr",chr,".set",s,".metrics",sep="")
+mets <- read.table(mets.fn, header=TRUE)
+
+########## 4) try rtracklayer to get RefSeq coords
+library(rtracklayer)
+session <- browserSession("UCSC")
+genomeBrowsers() # UCSC
+head(trackNames(session))
+trackNames(session)[grep("Ref",names(trackNames(session)))]
+ ## RefSeq Genes  Other RefSeq 
+ ##    "refGene" "xenoRefGene"
+
+genome(session) <- "hg19"
+
+tmp <- segs[segs$chrom==c & segs$segment==s,]
+grange <- GRanges(tmp$chrom.ucsc, IRanges(tmp$bp.start, tmp$bp.end)) 
+tbl <- getTable(ucscTableQuery(session, track="RefSeq Genes", range=grange, table="refGene"))
+dim(tbl); names(tbl)
+## [1] 220  16
+##  [1] "bin"          "name"         "chrom"        "strand"       "txStart"     
+##  [6] "txEnd"        "cdsStart"     "cdsEnd"       "exonCount"    "exonStarts"  
+## [11] "exonEnds"     "score"        "name2"        "cdsStartStat" "cdsEndStat"  
+## [16] "exonFrames"
+
+## use transcription start and end coordinates to define the gene boundaries
+
+## order the df by tx Start
+tbl.srt <- tbl[order(tbl$txStart),]
+
+########## 5) find overlap
+## annotate the metrics file for presence in a RefSeq gene region
+## Use IRanges and FindOverlap
+
+## "IRanges are collections of integer intervals. GRanges are like IRanges, but
+## with an associated chromosome and strand, taking care of some book
+## keeping"
+## (from http://www.biostat.jhsph.edu/~khansen/IRangesLecture.pdf)
+#### other help pages I'm looking it:
+## ...and http://stackoverflow.com/questions/19101849/overlapping-genomic-ranges
+## ..and http://stackoverflow.com/questions/3916195/finding-overlap-in-ranges-with-r
+
+#  I can stick with IRanges because I'm only doing one chrom at a time
+rangesGenes <- IRanges(tbl.srt$txStart, tbl.srt$txEnd)
+rangesMets <- IRanges(mets$position, mets$position, names=mets$rs_id)
+
+ov <- findOverlaps(rangesMets, rangesGenes) # query then subject
+class(ov)
+## [1] "Hits"
+## attr(,"package")
+## [1] "IRanges"
+
+## 'overlapsAny' finds the ranges in 'query' that overlap any of the
+##      ranges in 'subject'. For Ranges or Views objects, it returns a
+##      logical vector of length equal to the number of ranges in 'query'. ## yes, this is what we want!
+ovA <- overlapsAny(rangesMets, rangesGenes) 
+class(ovA)
+#[1] "logical"
+length(ovA)
+# [1] 43471
+
+table(ovA) ## do some spot checking in the UCSC genome brower
+## ovA
+## FALSE  TRUE 
+## 20264 23207
+
+head(rangesMets[ovA,])
+## IRanges of length 6
+##     start   end width       names
+## [1] 13302 13302     1 rs180734498 # in RefSeq gene
+## [2] 13327 13327     1 rs144762171 # in gene
+## [3] 13957 13957     1 rs201747181
+## [4] 13980 13980     1 rs151276478
+## [5] 69511 69511     1  rs75062661
+## [6] 69536 69536     1 rs200013390
+
+# spot check some that should not be in genes
+head(rangesMets[!ovA,])
+##     start   end width       names
+## [1] 10583 10583     1  rs58108140 # not in gene
+## [2] 10611 10611     1 rs189107123 # not in gene
+## [3] 30923 30923     1 rs140337953
+## [4] 46402 46402     1 rs199681827
+## [5] 47190 47190     1 rs200430748
+## [6] 51476 51476     1 rs187298206
+
+
+## ok, so this will work!
+## just add the custom SNPs as an extra set of Iranges
+
+## get the position of type 2 custom SNP
+cstm.type2 <- mets[is.element(mets$rs_id, cstm.snps$Name) &
+                   mets$type==2,]
+dim(cstm.type2) # 214 10
+## add 60kb to either end
+cstm.type2$start.pos <- cstm.type2$position-60000
+cstm.type2$end.pos <- cstm.type2$position+60000
+
+rangesTarget <- IRanges(start=c(tbl.srt$txStart, cstm.type2$start.pos),
+                        end=c(tbl.srt$txEnd,cstm.type2$end.pos),
+                        names=c(rep("RefSeq",times=nrow(tbl.srt)),
+                          rep("CustomSNP",times=nrow(cstm.type2))))
+                          
+length(rangesTarget) # 434
+dim(tbl.srt) # 220 RefSeq genes
+dim(cstm.type2) # 214 custom SNPs
+
+ovA <- overlapsAny(rangesMets, rangesTarget) 
+table(ovA)
+## ovA
+## FALSE  TRUE 
+## 11420 32051  ## adds ~9K more SNPs, due to proximity to custom SNPs
+
+library(ggplot2)
+mets$type.plot <- mets$type
+mets$type.plot[is.element(mets$rs_id, cstm.type2$rs_id)] <- 3
+ggplot(mets, aes(x=position,y=info, color=type.plot)) + geom_point(shape=".")
+
+## type 2 SNPs should all be ovA=TRUE
+table(mets$type, ovA)
+  ##  ovA
+  ##   FALSE  TRUE
+  ## 0 11416 31537
+  ## 2     4   514 ## only 4 type 2 SNPS not 'in target' - probably because they're right outside exon boundaries
+
+
+#### develop a batch script to identify list of variants in this region
+## then we'll run custom version of Make_Final_Plots.R 
+## see ./run_makePlotList.R
